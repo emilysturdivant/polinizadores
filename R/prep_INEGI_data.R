@@ -5,11 +5,14 @@ library(tidyverse)
 library(magrittr)
 library(mapedit)
 
+# f.usv <- 'http://internet.contenidos.inegi.org.mx/contenidos/Productos/prod_serv/contenidos/espanol/bvinegi/productos/geografia/tematicas/uso_suelo/1_250_000/serie_VI/889463598459_s.zip'
+# f.usv.16 <- 'http://internet.contenidos.inegi.org.mx/contenidos/Productos/prod_serv/contenidos/espanol/bvinegi/productos/geografia/tematicas/uso_suelo/889463173359_s.zip'
 #----
 # Get Agricultural polygons
-f.usv <- '~/PROJECTS/Pollinator_services/input_data/INEGI_usodesuelo_2017/conjunto_de_datos/usv250s6g.shp'
-usv <- st_read(f.usv)
-st_crs(st_geometry(usv)) <- 6362 # set EPSG code
+f.usv <- 'data/input_data/INEGI_usodesuelo_2017/conjunto_de_datos/usv250s6g.shp'
+
+usv <- st_read(f.usv, crs=6362)
+# st_crs(st_geometry(usv)) <- 6362 # set EPSG code
 # Filter TIP_INFO == AGRÍCOLA-PECUARIA-FORESTAL
 polys_ag <- usv %>% filter(TIP_INFO == 'AGRÍCOLA-PECUARIA-FORESTAL')
 
@@ -27,9 +30,9 @@ polys_ag %>%
   View()
 
 # Nómada polygons from INEGI - all are nómada (shifting cultivation)
-f.usv <- '~/PROJECTS/Pollinator_services/input_data/INEGI_usodesuelo_2017/conjunto_de_datos/usv250s6n.shp'
-polys_nom <- st_read(f.usv)
-st_crs(st_geometry(polys_nom)) <- 6362 # set EPSG code
+f.usv <- 'data/input_data/INEGI_usodesuelo_2017/conjunto_de_datos/usv250s6n.shp'
+polys_nom <- st_read(f.usv, crs=6362)
+# st_crs(st_geometry(polys_nom)) <- 6362 # set EPSG code
 
 # Merge Nómada with Agriculture
 polys_nom %<>% mutate(TIPAGES='AGRICULTURA NÓMADA', TIP_CUL1='NÓMADA') %>% 
@@ -43,16 +46,16 @@ polys %>%
   summarise(no_rows = length(CLAVE)) %>% 
   View()
 
-saveRDS(polys, '~/GitHub/polinizadores/data_out/polys_ag_INEGI.rds')
+saveRDS(polys, 'data/data_out/polys_ag_INEGI.rds')
 
-#----
+# ----
 # Cultivo points from INEGI - all are Agricola-Pecuaria-Forestal
-f.usv <- '~/PROJECTS/Pollinator_services/input_data/INEGI_usodesuelo_2017/conjunto_de_datos/usv250s6c.shp'
-pts_cult <- st_read(f.usv)
-st_crs(st_geometry(pts_cult)) <- 6362 # set EPSG code
+f.usv <- 'data/input_data/INEGI_usodesuelo_2017/conjunto_de_datos/usv250s6c.shp'
+pts_cult <- st_read(f.usv, crs=6362)
+# st_crs(st_geometry(pts_cult)) <- 6362 # set EPSG code
 colnames(pts_cult)
 # Decode cultivos for most important pollinator crops
-key <- read_csv('~/PROJECTS/Pollinator_services/input_data/INEGI_usodesuelo_2017/metadatos/INEGI_codes.csv')
+key <- read_csv('data/input_data/INEGI_usodesuelo_2017/metadatos/INEGI_codes.csv')
 key %<>% pmap(~set_names(..2, ..1)) %>% unlist() %>% 
   c(.default = NA_character_)
 pts_cult %<>% mutate(Culti1=recode(Culti1, !!!key),
@@ -68,11 +71,11 @@ culti_ct <- cults %>%
   arrange(desc(no_rows)) %>% 
   View()
 
-#----
+# ----
 # Forestales points from INEGI - all are Agricola-Pecuaria-Forestal
-f.usv <- '~/PROJECTS/Pollinator_services/input_data/INEGI_usodesuelo_2017/conjunto_de_datos/usv250s6f.shp'
-pts_for <- st_read(f.usv)
-st_crs(st_geometry(pts_for)) <- 6362 # set EPSG code
+f.usv <- 'data/input_data/INEGI_usodesuelo_2017/conjunto_de_datos/usv250s6f.shp'
+pts_for <- st_read(f.usv, crs=6362)
+# st_crs(st_geometry(pts_for)) <- 6362 # set EPSG code
 colnames(pts_for)
 
 # Look at numbers of points per important crop
@@ -81,6 +84,7 @@ grps <- pts_for %>%
   summarise(no_rows = length(Clave)) %>% 
   View()
 
+# ----
 View(agri_nogeom %>% 
        filter(grepl('.+TEMPORAL', TIPAGES, ignore.case=TRUE)) %>% 
        group_by(CLAVE) %>% 
