@@ -5,21 +5,40 @@ library(tidyverse)
 library(magrittr)
 library(mapedit)
 
-# f.usv <- 'http://internet.contenidos.inegi.org.mx/contenidos/Productos/prod_serv/contenidos/espanol/bvinegi/productos/geografia/tematicas/uso_suelo/1_250_000/serie_VI/889463598459_s.zip'
 # f.usv.16 <- 'http://internet.contenidos.inegi.org.mx/contenidos/Productos/prod_serv/contenidos/espanol/bvinegi/productos/geografia/tematicas/uso_suelo/889463173359_s.zip'
-#----
-# Get Agricultural polygons
-f.usv <- 'data/input_data/INEGI_usodesuelo_2017/conjunto_de_datos/usv250s6g.shp'
+# Links from https://www.inegi.org.mx/temas/usosuelo/default.html#Descargas
+usv_url <- 'http://internet.contenidos.inegi.org.mx/contenidos/Productos/prod_serv/contenidos/espanol/bvinegi/productos/geografia/tematicas/uso_suelo/1_250_000/serie_VI/889463598459_s.zip'
+data_dir <- 'data/input_data/INEGI_2017'
 
-usv <- st_read(f.usv, crs=6362)
-# st_crs(st_geometry(usv)) <- 6362 # set EPSG code
-# Filter TIP_INFO == AGRÍCOLA-PECUARIA-FORESTAL
-polys_ag <- usv %>% filter(TIP_INFO == 'AGRÍCOLA-PECUARIA-FORESTAL')
+# Load INEGI agricultural polygons ---------------------------------------------
+fp_usv <- list.files(path=data_dir, pattern='usv250s6g.shp$', 
+                     full.names=T, recursive=T)
 
-# Look at numbers of polygons in each cultivo
+if(length(fp)!=1){
+  # Downlaod zip and extract usv250s6g.shp
+  fn <- usv_url %>% basename()
+  download.file(usv_url, dest=fn)
+  fp_list <- unzip(fn, exdir=data_dir)
+  unlink(fn)
+  # Load the useful file as SF dataframe
+  fp_usv <- fp_list %>% str_subset('usv250s6g.shp$')  
+}
+usv <- st_read(fp_usv, crs=6362)
+
+# Filter to Agriculture --------------------------------------------------------
+polys_ag <- usv %>% 
+  filter(TIP_INFO == 'AGRÍCOLA-PECUARIA-FORESTAL', 
+         CLAVE != 'ACUI')
+
+# Exploration... look at polygon counts in different categories ----
 polys_ag %>% 
   st_drop_geometry() %>%
   group_by(TIP_CUL1) %>% 
+  summarise(no_rows = length(TIP_CUL1)) %>% 
+  View()
+polys_ag %>% 
+  st_drop_geometry() %>%
+  group_by(TIP_CUL2) %>% 
   summarise(no_rows = length(TIP_CUL1)) %>% 
   View()
 polys_ag %>% 
@@ -29,13 +48,13 @@ polys_ag %>%
   summarise(no_rows = length(CLAVE)) %>% 
   View()
 
-# Nómada polygons from INEGI - all are nómada (shifting cultivation)
-f.usv <- 'data/input_data/INEGI_usodesuelo_2017/conjunto_de_datos/usv250s6n.shp'
+# Nómada polygons from INEGI - all are nómada (shifting cultivation) -----------
+f.usv <- 'data/input_data/INEGI_2017/conjunto_de_datos/usv250s6n.shp'
 polys_nom <- st_read(f.usv, crs=6362)
-# st_crs(st_geometry(polys_nom)) <- 6362 # set EPSG code
 
 # Merge Nómada with Agriculture
-polys_nom %<>% mutate(TIPAGES='AGRICULTURA NÓMADA', TIP_CUL1='NÓMADA') %>% 
+polys_nom %<>% 
+  mutate(TIPAGES='AGRICULTURA NÓMADA', TIP_CUL1='NÓMADA') %>% 
   select(!NOM)
 polys <- list(polys_ag, polys_nom) %>% mapedit:::combine_list_of_sf()
 
@@ -45,6 +64,9 @@ polys %>%
   group_by(CLAVE) %>% 
   summarise(no_rows = length(CLAVE)) %>% 
   View()
+
+polys %>% object.size() %>% print(units='MB')
+mapview()
 
 saveRDS(polys, 'data/data_out/polys_ag_INEGI.rds')
 

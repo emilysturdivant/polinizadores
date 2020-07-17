@@ -3,9 +3,6 @@
 library(sf)
 library(tidyverse)
 library(magrittr)
-library(tmap)
-tmap_mode('view')
-library(rmapshaper)
 library(rvest)
 library(tools)
 library(mapview)
@@ -21,6 +18,7 @@ f.munis <- 'data/input_data/context_Mexico/SNIB_divisionpolitica/muni_2018gw/mun
 f.stat.cult <- 'http://infosiap.siap.gob.mx/gobmx/datosAbiertos/ProduccionAgricola/Cierre_agricola_mun_2019.csv'
 f.stat.agripro <- 'http://infosiap.siap.gob.mx/gobmx/datosAbiertos/Sup_Agricul_Protegida/Agricultura_Protegida_2015.csv'
 f.sup.agri <- 'http://infosiap.siap.gob.mx/gobmx/datosAbiertos/frontera-agricola/FASII_CW_Col_Jal_Ags_Gto_Mich.kmz'
+region <- 'CW'
 
 # Functions ----
 html_to_df <- function(x){
@@ -73,7 +71,7 @@ get_area_planted <- function(data, state_id_fld, muni_id_fld, crop_name_fld,
   # get total sembrada for each crop by municipio
   cultivo_totals <- data %>% 
     group_by({{state_id_fld}}, {{ muni_id_fld }}, {{ crop_name_fld }}, {{riego_id_fld}}) %>% 
-    summarize({{planted_fld}} := sum({{planted_fld}})) %>%
+    summarize({{planted_fld}} := sum({{planted_fld}}, na.rm=T)) %>%
     spread({{ crop_name_fld }}, {{planted_fld}})
   
   # Quote variable name arguments as quosures
@@ -86,7 +84,8 @@ get_area_planted <- function(data, state_id_fld, muni_id_fld, crop_name_fld,
     group_by({{state_id_fld}}, {{muni_id_fld}}, {{riego_id_fld}}) %>% 
     summarize({{planted_area_fld}} := sum({{planted_fld}})) %>% 
     full_join(cultivo_totals, 
-              by=c(quo_name(state_id_fld), quo_name(muni_id_fld), quo_name(riego_id_fld)))
+              by=c(quo_name(state_id_fld), quo_name(muni_id_fld), quo_name(riego_id_fld))) %>% 
+    as_tibble()
 }
 
 # Load SIAP Cultivos - area sembrada -------------------------------------------
@@ -132,15 +131,16 @@ munis <- st_read(f.munis) %>%
   mutate(CVE_ENT=as.integer(CVE_ENT),
          CVE_MUN=as.integer(CVE_MUN))
 
-# Intersect with municipios
-ag_munis <- sup_ag %>% 
+# Intersect with municipios and simplify
+ag_munis <- sup_ag  %>%
+  st_simplify(dTolerance = 0.0001) %>% 
   st_intersection(munis)  %>% 
   group_by(CVE_ENT, CVE_MUN, MOD_AGR) %>% 
   summarize(geometry = st_union(geometry)) %>% 
   as_tibble() %>% 
-  st_as_sf() 
+  st_as_sf()
 
-# get area for new polygons
+# get area for new polygons in ha
 ag_munis$area <- ag_munis %>% 
   st_transform(crs=6362) %>% 
   st_area() %>% 
@@ -152,9 +152,10 @@ out_fp <- file.path('data/input_data/SIAP/FASII',
                     str_glue('FASII_{region}_by_municipio.geojson'))
 ag_munis %>% st_write(out_fp, delete_dsn=T)
 
+# Save to R data
 save(ag_munis, file='data/data_out/ag_munis.RData')
 
-# Get frijol polygons ----------------------------------------------------------
+# Load frijol-maiz-granos polygons ----------------------------------------------------------
 data_dir <- 'data/input_data/SIAP/ESA_frijol_maiz_granos'
 
 # Load data
@@ -170,17 +171,70 @@ if(!exists('sup_frij_gran')){
 # Simplify to remove jagged edges and decrease size
 sup_frij_gran <- st_simplify(sup_frij_gran, preserveTopology = T, dTolerance = .0001)
 
+# Add area column
+sup_frij_gran$area_ha <- sup_frij_gran %>% 
+  st_transform(crs=6362) %>% 
+  st_area() %>% 
+  set_units('ha') %>% 
+  set_units(NULL)
+
+# Recode Municipios to CVE code - make named list for lookup
+lookup_cve_to_mun <- cultivos %>% 
+  filter(CVE_ENT==1) %>% 
+  select(Nommunicipio, CVE_MUN) %>% 
+  mutate(Nommunicipio = str_to_title(Nommunicipio)) %>% 
+  distinct %>% 
+  deframe()
+
+# Recode Municipios to CVE code - perform recode
+sup_frij_gran <- sup_frij_gran %>% 
+  mutate(NOM_MUN = str_to_title(NOM_MUN)) %>% 
+  mutate(CVE_MUN = recode(NOM_MUN, !!!lookup_cve_to_mun))
+
+# Get frijol and save
+sup_frijol <- sup_frij_gran %>% 
+  filter(CULTIVO=='Frijol') %>% 
+  mutate(Frijol = recode(CULTIVO, 'Frijol'=1.0))
+st_write(sup_frijol, 'data/data_out/polys_frijol_AGS.geojson')
+
 # Save
 save(sup_frij_gran, file='data/data_out/sup_frij_gran.RData')
 
-# Join crop area by municipio --------------------------------------------------
-# Load data
+# Extract frijol, maíz, and granos from general agriculture --------------------
+# Clip out FMG polygons -----
+# Filter to Aguascalientes
+ag_munis <- ag_munis %>% filter(CVE_ENT==1)
+
+# Difference
+ag_noFMG <- st_difference(
+    ag_munis, 
+    st_union(sup_frij_gran)
+  )
+
+# Tidy the polygons - drop crumbs and fill pinholes
+ag_noFMG <- ag_noFMG %>%
+  st_transform(crs=6362) %>% 
+  smoothr::drop_crumbs(threshold=1000) %>%
+  smoothr::fill_holes(threshold=100)  %>%
+  st_transform(crs=4326) %>% 
+  st_make_valid()
+
+mapview(ag_noFMG)
+
+# Get area for new polygons
+ag_noFMG$area <- ag_noFMG %>% 
+  st_transform(crs=6362) %>% 
+  st_area() %>% 
+  set_units('ha') %>% 
+  set_units(NULL)
+
+# Save
+save(ag_noFMG, file='data/data_out/polys_ag_noFMG_AGS.RData')
+
+# LOAD DATA --------------------------------------------------------------------
 load("data/data_out/area_sembrada_by_season.RData")
 load('data/data_out/ag_munis.RData')
 load('data/data_out/sup_frij_gran.RData')
-
-# Filter to Aguascalientes for testing 
-ag_munis <- ag_munis %>% filter(CVE_ENT==1)
 
 # Select crops with high pollinator importance
 important_crops <- c("aguacate", 'jitomate', 'café','mango',
@@ -188,94 +242,96 @@ important_crops <- c("aguacate", 'jitomate', 'café','mango',
                      'pepino', 'brócoli', 'cacao', 'zarzamora', 
                      'fresa', 'zanahoria', 'soya', 'frijol')
 
-# Use primavera 
-area_sembrada <- area_cult_prim
-
-# Get percent of agricultural land of each crop 
-pct_sembrada <- area_sembrada %>% 
-  mutate(across(
-    .cols = -CVE_ENT:-total_sembrada, 
-    .fns = ~ .x / total_sembrada
-  ))
-
-# Get number of differenet crops planted
-area_sembrada$count_crops <- area_sembrada %>% 
-    select(-CVE_ENT:-total_sembrada) %>% 
-    is.na %>% 
-    `!` %>% 
-    rowSums
-area_sembrada %<>% relocate(count_crops, .after=total_sembrada)
-
-  
-# Join
-ag_cultivos <- left_join(ag_munis, area_sembrada, 
-                             by=c('CVE_ENT', 'CVE_MUN', 'MOD_AGR'='Idmodalidad'))
-
-# Extract frijol, maíz, and granos from general agriculture --------------------
-
-# Crop for testing
-sup_frij_gran %>% object.size %>% print(units='MB')
-
-bb <- st_bbox(sup_frij_gran)
-sup_fmg <- sup_frij_gran %>% 
-  st_crop(bb + c(.5, .5, -.3, -.2))
-ag_munis <- ag_munis %>% 
-  st_crop(bb + c(.5, .5, -.3, -.2))
-
-# Dissolve
-sup_fmg_diss <- st_union(sup_fmg)
-
-# Difference
-ag_noFMG <- st_difference(ag_munis, sup_fmg_diss)
-
 # Look
 mapview(ag_munis) +
   mapview(ag_noFMG) +
-  mapview(ag_cultivos, zcol='Frijol') +
-  mapview(pct_sembrada, zcol='Frijol') +
   mapview(sup_fmg, zcol=('CULTIVO'))
 
-# Remove FMG from ag -----
+# Remove FMG colummns and calculate columns ------------------------------------
+# Use primavera 
+area_sembrada <- area_cult_prim
+# Filter to Aguascalientes
+area_sembrada <- area_sembrada %>% filter(CVE_ENT==1)
+
+# Remove FMG columns
 area_sembrada_noFMG <- area_sembrada %>% 
   select(!contains(c('maíz grano', 'frijol', 'sorgo grano', 'trigo grano')))
-pct_sembrada_noFMG <- pct_sembrada %>% 
-  select(!contains(c('maíz grano', 'frijol', 'sorgo grano', 'trigo grano')))
+
+# List columns
+vars <- area_sembrada_noFMG %>% 
+  select(-CVE_ENT:-total_sembrada) %>% 
+  colnames()
+
+# Get new total area 
+area_sembrada_noFMG$total_noFMG <- area_sembrada_noFMG %>% 
+  select(all_of(vars)) %>% 
+  rowSums(na.rm=T)
+area_sembrada_noFMG %<>% relocate(total_noFMG, .after=total_sembrada)
+
+# Get number of different crops planted
+area_sembrada_noFMG$count_crops <- area_sembrada_noFMG %>% 
+  select(all_of(vars)) %>% 
+  is.na %>% 
+  `!` %>% 
+  rowSums
+area_sembrada_noFMG %<>% relocate(count_crops, .before=total_sembrada)
+
+# Get percent of agricultural land of each crop 
+pct_sembrada_noFMG <- area_sembrada_noFMG %>% 
+  mutate(across(
+    .cols = all_of(vars), 
+    .fns = ~ .x / total_noFMG
+  ))
+
+# Join -------------------------------------------------------------------------
+ag_pct_cult_noFMG <- left_join(ag_noFMG, pct_sembrada_noFMG, 
+                               by=c('CVE_ENT', 'CVE_MUN', 'MOD_AGR'='Idmodalidad'))
+
+# ***** SAVE ***** ----
+ag_pct_cult_noFMG %>% 
+  st_write(dsn='data/data_out/polys_ag_noFMG_AGS.geojson', delete_dsn=T)
+
+# ***** SAVE with only top 15 important crops ***** ----
+ag_pct_cult_noFMG_important <- select(ag_pct_cult_noFMG, 
+                                      contains(all_of(important_crops)))
+ag_pct_cult_noFMG_important %>% 
+  st_write(dsn='data/data_out/polys_ag_noFMG_top15_AGS.geojson', delete_dsn=T)
+
+
+
+# EXTRA: Compare areas for frijol / maiz between polygons and statistics -------
+load('data/data_out/sup_frij_gran.RData')
+load("data/data_out/area_sembrada_by_season.RData")
+
+# Use primavera 
+area_sembrada <- area_cult_prim
+# Filter to Aguascalientes
+area_sembrada <- area_sembrada %>% filter(CVE_ENT==1)
+
+# Get totals for municipios (combine T and R modalidad)
+area_sembrada_FMG <- area_sembrada %>% 
+  group_by(CVE_ENT, CVE_MUN) %>% 
+  summarize(across(
+    contains(c('total_sembrada', 'maíz grano', 'frijol', 'sorgo grano', 'trigo grano')), 
+    ~sum(.x, na.rm=T)
+    )) %>% 
+  pivot_longer(contains(c('maíz grano', 'frijol', 'sorgo grano', 'trigo grano')),
+               names_to="CULTIVO",
+               values_to='area_sembrada')
 
 # Join
-ag_cult_noFMG <- left_join(ag_noFMG, area_sembrada_noFMG, 
-                         by=c('CVE_ENT', 'CVE_MUN', 'MOD_AGR'='Idmodalidad'))
-ag_pct_cult_noFMG <- left_join(ag_noFMG, pct_sembrada_noFMG, 
-                           by=c('CVE_ENT', 'CVE_MUN', 'MOD_AGR'='Idmodalidad'))
+ag_FMG <- left_join(area_sembrada_FMG, sfg, by=c('CVE_MUN', 'CULTIVO'))
 
-# Look
-mapview(ag_pct_cult_noFMG, zcol='Fresa') +
-  mapview(sup_fmg, zcol=('CULTIVO'))
-
-
-
-
-
-# meow ----
-# Drop columns with only NA values
+# EXTRA: Drop columns with only NA values --------------------------------------
 ag_cults1 <- ag_cultivos %>% 
   select_if(~sum(!is.na(.)) > 0) 
 ag_cults1 %>% colnames()
-# Select only the important crops
-ag_cults2 <- ag_cults1 %>% 
-  select(CVE_ENT:total_sembrada, contains(important_crops))
-ag_cults2 %>% colnames()
 
 crop <- "Ajo"
 mapview(ag_cultivos, zcol=crop, layer.name='Area') +
   mapview(pct_sembrada, zcol=crop, layer.name='Pct crop area') 
 
-
-
-
-# Important crops --------------------------------------------------------------
-
-
-# Drop municipios without important crops
+# EXTRA: Drop municipios without important crops -------------------------------
 ag_important_cults <- ag_cultivos %>% 
   select(CVE_ENT:total_sembrada, contains(important_crops)) %>% 
   select_if(~sum(!is.na(.)) > 0)  %>% 
@@ -292,27 +348,11 @@ ag_important_cults2 <- ag_important_cults %>%
     across(all_of(vars), ~replace_na(.x, 0))
     )
 
+# Look ----
 ag_important_cults2 %>% 
   tm_shape()+
   tm_polygons()+
   tm_facets(sync = TRUE, ncol = 3)
-
-ag_cultivos %>% colnames
-ag_cultivos %>% 
-  # select(Aguacate, Frijol) %>% 
-  mapview(zcol=c("Avena.forrajera.en.verde", "Frijol"))
-
-  
-  
-  
-  
-  
-
-pct_cult_important <- pct_cult %>% 
-  select(Idestado, Idmunicipio, contains(important_crops))
-
-# Check out plot
-plot(select(munis_cult, contains('jitomate')))
 
 # By state
 munis_cult_mich <- munis_cult %>% filter(NOM_ENT=='Michoacán de Ocampo')
@@ -323,7 +363,9 @@ munis_cult_mich %>%
   tm_polygons(c('Tomate rojo (jitomate)', 'Pepino', 'Zarzamora', 'Melón'))+
   tm_facets(sync = TRUE, ncol = 2)
 
-# Intersect municipios with agricultural coverage -----
+
+
+
 
 
 
@@ -353,53 +395,4 @@ pct_agr <- pct_cult %>%
             suffix=c('',', protegida'))
 colnames(pct_agr)
 
-
-
-
-
-# Old -----
-f.sup.frij.gran <- 'data/Michoacan_beta/ESA_PV_2015_NACIONAL.kml'
-f.sup.frij.gran <- 'data/Michoacan_beta/ESA_PV_2015_NACIONAL.geojson'
-
-# Load SIAP superficie de frijol (two options)
-# GeoJSON, converted from KMZ in QGIS using Expand HTML description field (KML Tool)
-# f.sup.frij.gran <- 'data/Michoacan_beta/ESA_PV_2015_NACIONAL.geojson'
-# sup.frij.gran <- st_read(f.sup.frij.gran)
-# summary(sup.frij.gran)
-
-# KML - KMZ converted to KML in QGIS
-f.sup.frij.gran <- 'data/input_data/SIAP/ESA_PV2015_MICHq.kml'
-sup.frij.gran <- st_read(f.sup.frij.gran)
-sup.frij.gran$Cultivo <- sup.frij.gran$description %>% 
-  as.character() %>% 
-  str_extract('Maíz grano|Sorgo grano|Trigo grano|Frijol')
-sup.frij.gran %<>% select(Name, Cultivo, geometry)
-object.size(sup.frij.gran) %>% print(units='MB')
-
-# Extract Frijol
-frijol <- sup.frij.gran %>% filter(Cultivo=='Frijol')
-plot(frijol[2])
-
-# Extract Granos (all except frijol)
-granos <- sup.frij.gran %>% filter(!grepl('Frijol', Cultivo))
-plot(granos[2])
-
-# Simplify polygons
-simplepolys <- rmapshaper::ms_simplify(input = sup.frij.gran) %>%
-  st_as_sf()
-plot(simplepolys[2]) # plot by Cultivo (2nd column)
-object.size(simplepolys) %>% print(units='MB')
-tm_shape(simplepolys) + tm_polygons(col='Cultivo')
-
-simplepolys %>% st_write('data/input_data/SIAP/ESA_PV2015_MICHq_simpleR.gpkg')
-
-#----
-# Compare INEGI ag and SIAP select ag
-
-#----
-# From INEGI agricultura uso de suelo, extract SIAP superficie de frijol
-
-
-#----
-# Then we have superficie de frijol and of everything else. For the everything else, assign probabilities
 
