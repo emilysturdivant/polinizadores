@@ -3,6 +3,16 @@
 library(tabulizer)
 library(tidyverse)
 
+# Pollinator database in JSON format ----
+data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/avispas_test'
+
+fp <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/avispas_test/Brachygastra mellifica_1.json'
+txt <- fp %>% readLines %>% paste(collapse='')
+spec <- rjson::fromJSON(txt)
+specs <- spec$results
+specs[[1]]$decimalLongitude
+specs[[1]]$decimalLatitude
+
 #---
 fname <- '/Users/emilysturdivant/GitHub/polinizadores/data_in/Apendice 1.pdf'
 
