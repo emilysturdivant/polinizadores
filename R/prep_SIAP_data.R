@@ -1,4 +1,4 @@
-
+# SIAP Datos Abiertos page: http://infosiap.siap.gob.mx/gobmx/datosAbiertos.php
 # Load libraries ----
 library(sf)
 library(tidyverse)
@@ -12,7 +12,7 @@ library(units)
 html_to_df <- function(x){
   # get values from description field
   x %>% 
-    minimal_html() %>% 
+    minimal_html %>% 
     html_node('table') %>% 
     html_table(fill=T) %>% 
     select(X1, X2) %>% 
@@ -26,7 +26,7 @@ load_kmz_as_sf <- function(kmz_url, data_dir, out_fp, col_types=NULL){
   download.file(kmz_url, dest=kmz_name)
   sf <- kmz_name %>% 
     unzip(list=F, exdir=data_dir) %>% 
-    st_read()
+    st_read
   unlink(kmz_name)
   
   # Convert KML description field to DF
@@ -42,38 +42,42 @@ load_kmz_as_sf <- function(kmz_url, data_dir, out_fp, col_types=NULL){
     select(Name) %>%
     cbind(df) %>%
     st_zm(drop=T, what='ZM') %>% 
-    st_make_valid()
+    st_make_valid
 
   return(sf)
 }
 
 intersect_with_munis <- function(sup_ag, municipios){
+  colnames(sup_ag)
   # Intersect with municipios and simplify
   ag_munis <- sup_ag  %>%
     st_simplify(dTolerance = 0.0001) %>% 
     st_intersection(municipios)  %>% 
     group_by(CVE_ENT, CVE_MUN, MOD_AGR) %>% 
     summarize(geometry = st_union(geometry)) %>% 
-    as_tibble() %>% 
-    st_as_sf()
+    as_tibble %>% 
+    st_as_sf
   
   # get area for new polygons in ha
   ag_munis$area <- ag_munis %>% 
     st_transform(crs=6362) %>% 
-    st_area() %>% 
+    st_area %>% 
     set_units('ha') %>% 
     set_units(NULL)
   
   return(ag_munis)
 }
 
-load_and_preprocess_ag <- function(region, data_dir, municipios, return_data=T){
+load_and_preprocess_ag <- function(region, data_dir, municipios, return_df=T){
   fp_ag <- file.path(data_dir, str_c('FASII_', region, '.geojson'))
   
   if(!file.exists(fp_ag)){
     url_ag <- str_c('http://infosiap.siap.gob.mx/gobmx/datosAbiertos/', 
                     'frontera-agricola/FASII_', region, '.kmz')
-    sup_ag <- load_kmz_as_sf(url_ag, data_dir, 'iicicicdcc')
+    sup_ag <- load_kmz_as_sf(url_ag, data_dir, 'iicicicdcc') 
+    if ('CVE_EDO' %in% colnames(sup_ag)) {
+      sup_ag <- sup_ag %>% rename(CVE_ENT=CVE_EDO)
+    }
     
     # Intersect with municipios
     sup_ag <- intersect_with_munis(sup_ag, municipios)
@@ -81,35 +85,34 @@ load_and_preprocess_ag <- function(region, data_dir, municipios, return_data=T){
     # Save to file
     sup_ag %>% st_write(fp_ag, delete_dsn=T)
   } else {
-    if(return_data) return(st_read(fp_ag)) else return(fp_ag)
+    if(return_df) return(st_read(fp_ag)) else return(fp_ag)
   } 
-  if(return_data) return(sup_ag) else return(fp_ag)
+  if(return_df) return(sup_ag) else return(fp_ag)
 }
 
 preprocess_fmg <- function(sup_frij_gran, lookup){
   # Simplify to remove jagged edges and decrease size
-  sup_frij_gran <- st_simplify(sup_frij_gran, preserveTopology = T, dTolerance = .0001)
+  sup_frij_gran <- sup_frij_gran %>% 
+    st_simplify(preserveTopology = T, dTolerance = .0001)
   
   # Add area column
   sup_frij_gran$area_ha <- sup_frij_gran %>% 
     st_transform(crs=6362) %>% 
-    st_area() %>% 
+    st_area %>% 
     set_units('ha') %>% 
     set_units(NULL)
   
   # Recode Municipios to CVE code
   if(missing(lookup)) {
-    lookup <- readRDS('data/helpers/lookup_municipio_codes.rds')
+    lookup <- readRDS('data/helpers/lookup_municipio_codes.rds') %>% 
+      mutate(CVE_ENT=as.integer(CVE_ENT),
+             CVE_MUN=as.integer(CVE_MUN))
   }
   
   sup_frij_gran <- sup_frij_gran %>% 
-    mutate(CVE_ENT=as.integer(CVE_ENT),
-           CVE_MUN=as.integer(CVE_MUN), 
-           NOM_MUN = str_to_title(str_trim(NOM_MUN)),
+    mutate(NOM_MUN = str_to_title(str_trim(NOM_MUN)),
            DELEGACIÓN = str_replace_all(DELEGACIÓN, 'Distrito Federal', 'Ciudad De México')) %>% 
-    left_join(lookup, by=c('DELEGACIÓN'='NOM_ENT', 'NOM_MUN')) %>% 
-    mutate(CVE_ENT=as.integer(CVE_ENT),
-           CVE_MUN=as.integer(CVE_MUN))
+    left_join(lookup, by=c('DELEGACIÓN'='NOM_ENT', 'NOM_MUN'))
   
   if(!all(!is.na(sup_frij_gran$CVE_MUN))){
     print('WARNING: not all municipios matched')
@@ -126,9 +129,10 @@ load_and_preprocess_fmg <- function(estado_code, data_dir, return_df, lookup, fp
   
   if(file.exists(fp_fmg)){
     # Read file
-    sup_frij_gran <- st_read(fp_fmg) %>% 
-      mutate(CVE_ENT=as.integer(CVE_ENT),
-             CVE_MUN=as.integer(CVE_MUN))
+    sup_frij_gran <- st_read(fp_fmg) 
+    # %>% 
+    #   mutate(CVE_ENT=as.integer(CVE_ENT),
+    #          CVE_MUN=as.integer(CVE_MUN))
   } else {
     # Download and convert from KMZ
     url_fmg <- str_c('http://infosiap.siap.gob.mx/gobmx/datosAbiertos/', 
@@ -167,41 +171,111 @@ get_area_planted <- function(data, state_id_fld, muni_id_fld, crop_name_fld,
               by=c(quo_name(state_id_fld), quo_name(muni_id_fld), quo_name(riego_id_fld))) %>% 
     as_tibble()
 }
+ag_by_munis <- ag0
+spec_polys <- sup_fmg0
+st_geometry_type(ag_by_munis)
+ag_noFMG <- ag_noFMG %>% 
+  st_collection_extract('POLYGON') %>%
+  group_by(CVE_ENT, CVE_MUN, MOD_AGR) %>% 
+  summarise(area = sum(area)) %>% 
+  ungroup
 
 clip_out_polys_from_ag <- function(ag_by_munis, spec_polys){
-  # Get CVE for state of FMG data
-  cve_ent <- spec_polys %>% 
-    st_set_geometry(NULL) %>% 
-    select(CVE_ENT) %>% 
-    distinct %>% 
-    deframe
-  
   # Remove FMG from agricultural areas
-  ag_noFMG <- st_difference(
-    filter(ag_by_munis, CVE_ENT==cve_ent), 
-    st_union(spec_polys)
-  )
+  ag_for_diff <- ag_by_munis  %>% 
+    st_transform(crs=6362) %>% 
+    st_make_valid
+  spec_for_diff <- spec_polys %>% 
+    st_union %>% 
+    st_transform(crs=6362) %>% 
+    st_make_valid
+  ag_noFMG <- st_difference(ag_for_diff, spec_for_diff) %>% 
+    st_collection_extract('POLYGON') %>%
+    group_by(CVE_ENT, CVE_MUN, MOD_AGR) %>% 
+    summarise %>% 
+    ungroup
   
   # Tidy the polygons - drop crumbs and fill pinholes
   ag_noFMG <- ag_noFMG %>%
-    st_transform(crs=6362) %>% 
-    smoothr::drop_crumbs(threshold=1000) %>%
-    smoothr::fill_holes(threshold=100)  %>%
+    smoothr::fill_holes(threshold=1000) %>%
+    st_buffer(-25) %>% 
+    smoothr::drop_crumbs(4000) %>% 
+    st_buffer(25, endCapStyle='FLAT', joinStyle='MITRE') %>% 
+    smoothr::drop_crumbs(threshold=50000) %>%
     st_transform(crs=4326) %>% 
-    st_make_valid()
+    st_make_valid
   
   # Get area for new polygons
   ag_noFMG$area <- ag_noFMG %>% 
     st_transform(crs=6362) %>% 
-    st_area() %>% 
+    st_area %>% 
     set_units('ha') %>% 
     set_units(NULL)
   
   return(ag_noFMG)
 }
 
-# Filenames ---
-# SIAP Datos Abiertos page: http://infosiap.siap.gob.mx/gobmx/datosAbiertos.php
+remove_FMG_from_ag_by_state <- function(estado, ag_dir, fmg_dir, out_dir, states_by_region){
+  # Get path for output file
+  if(missing(out_dir)) out_dir <- 'data/data_out/polys_ag_SIAP_noFMG'
+  fp_out <- file.path(out_dir, str_c('siap_noFMG_', estado, '.geojson'))
+  
+  # Don't proceed if file already exists
+  if (file.exists(fp_out)) return(fp_out)
+  
+  # Get region code (ag) from state code (sup_fmg)
+  if(missing(states_by_region)) {
+    states_by_region <- readRDS('data/helpers/states_by_region.rds')
+  }
+  region <- states_by_region %>% 
+    filter(state==estado) %>% 
+    select(region) %>% 
+    deframe
+  
+  # Load specific zone from ag data and specific state from FMG
+  ag <- load_and_preprocess_ag(region, ag_dir)
+  sup_fmg <- load_and_preprocess_fmg(estado, fmg_dir, T)
+  
+  # Get CVE for state of FMG data
+  cve_ent <- sup_fmg %>% 
+    st_set_geometry(NULL) %>% 
+    select(CVE_ENT) %>% 
+    distinct %>% 
+    deframe
+  ag <- ag %>% 
+    mutate(CVE_ENT = as.integer(CVE_ENT)) %>% 
+    filter(CVE_ENT == cve_ent)
+  
+  # Remove FMG from ag
+  siap_noFMG <- clip_out_polys_from_ag(ag, sup_fmg)
+  
+  # Save 
+  siap_noFMG %>% st_write(fp_out, delete_dsn=T)
+  return(fp_out)
+}
+
+# Initialize regions and states ---
+ag_dir <- 'data/input_data/SIAP/FASII'
+regions <- c('CW_Col_Jal_Ags_Gto_Mich', 'C_Qro_Hgo_Mex_Tlax_Pue_Mor_DF', 
+             'CE_Tab_Ver', 'N_Chih_Coah_Dgo__SLP_Zac', 'NE_Tams_NL', 
+             'NW_BC_BCS_Son_Sin_Nay', 'S_Gro_Oax_Chis', 'SE_Camp_QRoo_Yuc')
+fmg_dir <- 'data/input_data/SIAP/frijol_maiz_granos'
+est_codes <- c('AGS', 'BC', 'BCS', 'CAM', 'CHH', 'CHIS', 'COAH', 'COL', 'DF', 
+               'DGO', 'GRO', 'HGO', 'JAL', 'MICH', 'MOR', 'NAY', 'NVL', 'OAX', 
+               'QRO', 'QROO', 'RL', 'SLP', 'SON', 'TAB', 'TAM', 'TLX', 'VER',
+               'YUC', 'ZAC')
+states_by_region <- list(
+  'CW_Col_Jal_Ags_Gto_Mich' = c('AGS', 'JAL', 'MICH','COL'),
+  'C_Qro_Hgo_Mex_Tlax_Pue_Mor_DF' = c('QRO', 'HGO', 'TLX', 'MOR', 'DF'), 
+  'CE_Tab_Ver' = c('TAB', 'VER'), 
+  'N_Chih_Coah_Dgo__SLP_Zac' = c('CHH', 'COAH', 'DGO', 'SLP', 'ZAC', 'RL'), 
+  'NE_Tams_NL' = c('TAM', 'NVL'), 
+  'NW_BC_BCS_Son_Sin_Nay' = c('BC', 'BCS', 'SON', 'NAY'), 
+  'S_Gro_Oax_Chis' = c('GRO', 'OAX', 'CHIS'), 
+  'SE_Camp_QRoo_Yuc' = c('CAM', 'QROO', 'YUC')
+) %>% enframe('region', 'state') %>% unnest_longer(state)
+states_by_region %>% saveRDS('data/helpers/states_by_region.rds')
+
 
 # Load SIAP Cultivos - area sembrada -------------------------------------------
 url_cult_stats <- str_c('http://infosiap.siap.gob.mx/gobmx/datosAbiertos/',
@@ -246,21 +320,10 @@ lookup <- munis %>%
 lookup %>% saveRDS('data/helpers/lookup_municipio_codes.rds')
 
 # Pre-process all SIAP agricultural coverage KMZs (2010) -----------------------
-ag_dir <- 'data/input_data/SIAP/FASII'
-regions <- c('CW_Col_Jal_Ags_Gto_Mich', 'C_Qro_Hgo_Mex_Tlax_Pue_Mor_DF', 
-             'CE_Tab_Ver', 'N_Chih_Coah_Dgo__SLP_Zac', 'NE_Tams_NL', 
-             'NW_BC_BCS_Son_Sin_Nay', 'S_Gro_Oax_Chis', 'SE_Camp_QRoo_Yuc')
-
 # Download and convert from KMZ
 regions %>% sapply(load_and_preprocess_ag, ag_dir, munis, F)
 
 # Load frijol-maiz-granos polygons ---------------------------------------------
-fmg_dir <- 'data/input_data/SIAP/frijol_maiz_granos'
-est_codes <- c('AGS', 'BC', 'BCS', 'CAM', 'CHH', 'CHIS', 'COAH', 'COL', 'DF', 
-               'DGO', 'GRO', 'HGO', 'JAL', 'MICH', 'MOR', 'NAY', 'NVL', 'OAX', 
-               'QRO', 'QROO', 'RL', 'SLP', 'SON', 'TAB', 'TAM', 'TLX', 'VER',
-               'YUC', 'ZAC')
-
 # Download and convert from KMZ
 est_codes %>% sapply(load_and_preprocess_fmg, fmg_dir, FALSE)
 
@@ -308,8 +371,7 @@ sup_fmg <- list(sup_fmgZ, polys) %>%
 fp_fmg <- file.path(fmg_dir, str_c('ESA_PV2015_', 'COAH', '.geojson'))
 st_write(sup_fmg, fp_fmg, delete_dsn=T)
 
-# ------------------------------------------------------------------------------
-# Get frijol and save
+# Save frijol polys separately -------------------------------------------------
 # sup_frijol <- sup_frij_gran %>% 
 #   filter(CULTIVO=='Frijol') %>% 
 #   mutate(Frijol = recode(CULTIVO, 'Frijol'=1.0))
@@ -319,53 +381,134 @@ st_write(sup_fmg, fp_fmg, delete_dsn=T)
 # Save
 # save(sup_frij_gran, file='data/data_out/r_data/sup_frij_gran.RData')
 
-# Extract frijol, maíz, and granos from general agriculture --------------------
-states_by_region <- list(
-  'CW_Col_Jal_Ags_Gto_Mich' = c('AGS', 'JAL', 'MICH','COL'),
-  'C_Qro_Hgo_Mex_Tlax_Pue_Mor_DF' = c('QRO', 'HGO', 'TLX', 'MOR', 'DF'), 
-  'CE_Tab_Ver' = c('TAB', 'VER'), 
-  'N_Chih_Coah_Dgo__SLP_Zac' = c('CHH', 'COAH', 'DGO', 'SLP', 'ZAC', 'RL'), 
-  'NE_Tams_NL' = c('TAM', 'NVL'), 
-  'NW_BC_BCS_Son_Sin_Nay' = c('BC', 'BCS', 'SON', 'NAY'), 
-  'S_Gro_Oax_Chis' = c('GRO', 'OAX', 'CHIS'), 
-  'SE_Camp_QRoo_Yuc' = c('CAM', 'QROO', 'YUC')
-) %>% enframe('region', 'state') %>% unnest_longer(state)
+# Extract FMG from general agriculture -----------------------------------------
+for(estado in est_codes){
+  remove_FMG_from_ag_by_state(estado, ag_dir, fmg_dir)
+}
+remove_FMG_from_ag_by_state(estado, ag_dir, fmg_dir)
 
-estado <- 'DGO'
+# Testing ----
+out_dir <- 'data/data_out/polys_ag_SIAP_noFMG'
+estado <- 'MICH'
 region <- states_by_region %>% 
   filter(state==estado) %>% 
   select(region) %>% 
   deframe
-
-# Load specific zone from ag data
-ag <- load_and_preprocess_ag(region, ag_dir, munis)
-
-# Load specific state from FMG data
+ag <- load_and_preprocess_ag(region, ag_dir)
 sup_fmg <- load_and_preprocess_fmg(estado, fmg_dir, T)
-mapview(ag, zcol='MOD_AGR')+
-  mapview(sup_fmg, zcol='CULTIVO')
 
-# Remove
-siap_noFMG <- clip_out_polys_from_ag(ag, sup_fmg)
-mapview(siap_noFMG)
+# Perform by municipios
+# Get CVE for state of FMG data
+lookup <- readRDS('data/helpers/lookup_municipio_codes.rds') %>% 
+  mutate(CVE_ENT = as.integer(CVE_ENT),
+         CVE_MUN = as.integer(CVE_MUN),
+         NOM_MUN = stringi::stri_trans_general(str=NOM_MUN, id='Latin-ASCII'),
+         NOM_ENT = stringi::stri_trans_general(str=NOM_ENT, id='Latin-ASCII'), 
+         NOM_ENT = str_replace(NOM_ENT, 'Michoacan De Ocampo', 'Michoacan'))
 
+sup_fmg <- sup_fmg %>% 
+  mutate(NOM_MUN = str_trim(NOM_MUN) %>% 
+           stringi::stri_trans_general(str=., id='Latin-ASCII') %>% 
+           str_to_title,
+         DELEGACIÓN = stringi::stri_trans_general(str=DELEGACIÓN, id='Latin-ASCII'), 
+         DELEGACIÓN = str_replace_all(DELEGACIÓN, 'Distrito Federal', 'Ciudad De Mexico')) %>% 
+  select(-CVE_ENT, -CVE_MUN) %>% 
+  left_join(lookup, by=c('DELEGACIÓN'='NOM_ENT', 'NOM_MUN'))
+
+# Filter ag to state
+cve_ent <- sup_fmg %>% 
+  st_set_geometry(NULL) %>% 
+  select(CVE_ENT) %>% 
+  distinct %>% 
+  deframe
+ag <- ag %>% 
+  mutate(CVE_ENT = as.integer(CVE_ENT)) %>% 
+  filter(CVE_ENT == cve_ent)
+
+# List municipios present in both ag and FMG
+cve_muns_ag <- ag %>% 
+  st_set_geometry(NULL) %>% 
+  select(CVE_MUN) %>% 
+  distinct 
+cve_muns_fmg <- sup_fmg %>% 
+  st_set_geometry(NULL) %>% 
+  select(CVE_MUN) %>% 
+  distinct 
+cve_muns_int <- inner_join(cve_muns_ag, cve_muns_fmg) %>% deframe
+cve_muns_agonly <- anti_join(cve_muns_ag, cve_muns_fmg) %>% deframe
+
+remove_fmg_from_ag_by_muni <- function(cve_mun, ag, sup_fmg){
+  # Filter to municipio
+  ag0 <- ag %>% 
+    filter(CVE_MUN == cve_mun)
+  sup_fmg0 <- sup_fmg %>% 
+    mutate(CVE_MUN = as.integer(CVE_MUN)) %>% 
+    filter(CVE_MUN == cve_mun)
+  
+  # Perform removal
+  siap_noFMG0 <- clip_out_polys_from_ag(ag0, sup_fmg0)
+  return(siap_noFMG0)
+}
+
+# Process with lapply, holding muni subsets in memory to merge ----
+# Remove FMG from ag in munis with FMG
+ag_noFMG <- cve_muns_int %>% 
+  lapply(remove_fmg_from_ag_by_muni, ag, sup_fmg) %>% 
+  mapedit:::combine_list_of_sf()
+# Get agriculture in munis without FMG
+if (length(cve_muns_agonly) > 0){
+  ag0 <- ag %>% filter(CVE_MUN %in% cve_muns_agonly)
+  ag_noFMG <- list(ag_noFMG, ag0) %>% 
+    mapedit:::combine_list_of_sf()
+}
 # Save
-save(siap_noFMG, file=str_c('data/data_out/r_data/polys_ag_noFMG_', estado, '.RData'))
+ag_noFMG_combo %>% st_write(file.path(out_dir, str_c('siap_noFMG_', estado, '.geojson')))
+mapview(ag_noFMG)
+# Process each municipio that is present in both ag and FMG ----
+
+# Process in for loop and save muni files -----
+# For loop that writes files
+state_dir <- file.path(out_dir, estado)
+dir.create(state_dir)
+for (cve_mun in cve_muns_int){
+  siap_noFMG0 <- remove_fmg_from_ag_by_muni(cve_mun, ag, sup_fmg)
+  # Save
+  fp_out <- file.path(state_dir, 
+                      str_c('siap_noFMG_', estado, '_', cve_mun, '.geojson'))
+  siap_noFMG0 %>% st_write(fp_out, delete_dsn=T, driver='GeoJSON')
+}
+
+# Get agriculture in munis without FMG
+ag0 <- ag %>% 
+  filter(CVE_MUN %in% cve_muns_agonly)
+# Save
+fp_out <- file.path(out_dir, 
+                    str_c('siap_noFMG_', estado, '_agX.geojson'))
+ag0 %>% st_write(fp_out, delete_dsn=T, driver='GeoJSON')
+
+# merge
+fps <- list.files(out_dir, full.names=T)
+ag_noFMG <- fps %>% 
+  lapply(st_read) %>% 
+  mapedit:::combine_list_of_sf
+# Save
+ag_noFMG %>% st_write(file.path(out_dir, str_c('siap_noFMG_', estado, '.geojson')))
+
+
+
+# Look
+mapview(ag, zcol='MOD_AGR')+
+  mapview(sup_fmg, zcol='CULTIVO')+
+  mapview(siap_noFMG)
 
 # LOAD DATA --------------------------------------------------------------------
 load("data/data_out/r_data/area_sembrada_by_season.RData")
-load('data/data_out/r_data/ag_munis.RData')
-load('data/data_out/r_data/sup_frij_gran.RData')
-load('data/data_out/r_data/polys_ag_noFMG_AGS.RData')
 
 # Select crops with high pollinator importance
 important_crops <- c("aguacate", 'jitomate', 'café','mango',
                      'sandía','manzana','melón', 'calabaza', 
                      'pepino', 'brócoli', 'cacao', 'zarzamora', 
                      'fresa', 'zanahoria', 'soya', 'frijol')
-
-# Look (at Aguascalientes)
-mapview(ag_munis %>% filter(CVE_ENT==1)) 
 
 # Remove FMG columns and calculate columns ------------------------------------
 # Use primavera 
@@ -401,15 +544,19 @@ pct_sembrada_noFMG <- area_sembrada_noFMG %>%
   mutate(across(
     .cols = all_of(vars), 
     .fns = ~ .x / total_noFMG
-  ))
+  )) 
 
 # Join -------------------------------------------------------------------------
-ag_pct_cult_noFMG <- left_join(ag_noFMG, pct_sembrada_noFMG, 
-                               by=c('CVE_ENT', 'CVE_MUN', 'MOD_AGR'='Idmodalidad'))
+# ag_pct_cult_noFMG <- left_join(ag_noFMG, pct_sembrada_noFMG, 
+#                                by=c('CVE_ENT', 'CVE_MUN', 'MOD_AGR'='Idmodalidad'))
 
+estado <- 'AGS'
+siap_noFMG <- st_read(file.path(out_dir, str_c('siap_noFMG_', estado, '.geojson')))
+ag_pct_cult_noFMG <- left_join(siap_noFMG, pct_sembrada_noFMG, 
+                               by=c('CVE_ENT', 'CVE_MUN', 'MOD_AGR'='Idmodalidad'))
 # ***** SAVE ***** ----
 ag_pct_cult_noFMG %>% 
-  st_write(dsn='data/data_out/polys_ag_noFMG_AGS.geojson', delete_dsn=T)
+  st_write(dsn='data/data_out/polys_ag_noFMG_AGS_percents.geojson', delete_dsn=T)
 
 # ***** SAVE with only top 15 important crops ***** ----
 ag_pct_cult_noFMG_important <- select(ag_pct_cult_noFMG, 
@@ -487,33 +634,5 @@ munis_cult_mich %>%
 
 
 
-
-
-# Agrícultural protegida ----
-# Percent coverage per municipio
-# agripro <- read.csv(f.stat.agripro, header=TRUE, fileEncoding="latin1")
-f.stat.agripro <- 'http://infosiap.siap.gob.mx/gobmx/datosAbiertos/Sup_Agricul_Protegida/Agricultura_Protegida_2015.csv'
-agripro <- read_csv(f.stat.agripro, col_types = 'iciciciciccccinn', locale=locale(encoding='latin1'))
-pct_agripro <- get_pct_planted(agripro, CVE_EDO, CVE_MUN, CULTIVOS, 
-                                       SUP_HAS, sembrada_area, sembrada_pct)
-
-# agg_agripro <- agripro %>% 
-#   group_by(CVE_EDO, CVE_MUN, CULTIVOS) %>% 
-#   summarize(area=sum(SUP_HAS)) %>% 
-#   group_by(CVE_MUN) %>% 
-#   mutate(total_area=sum(area), 
-#          porcentaje=area/total_area)
-# pct_agripro <- agg_agripro %>% 
-#   select(CVE_EDO, CVE_MUN, CULTIVOS, porcentaje) %>% 
-#   spread(CULTIVOS, porcentaje)
-
-# Join AgriPro and regular Cultivos -----
-# There are MANY items listed for crops, especially for AgriPro, 
-# where there is often a list of multiple crops
-pct_agr <- pct_cult %>% 
-  full_join(pct_agripro, 
-            by=c('Idestado'='CVE_EDO', 'Idmunicipio'='CVE_MUN'),
-            suffix=c('',', protegida'))
-colnames(pct_agr)
 
 

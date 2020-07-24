@@ -1,6 +1,6 @@
 # Convert Apendice 1 to a dataframe. It looks like this produces some errors. Better just to ask for 
 
-library(tabulizer)
+# library(tabulizer)
 library(tidyverse)
 
 # Pollinator database in JSON format ----
