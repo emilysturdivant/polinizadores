@@ -1,23 +1,33 @@
 
-# Load libraries
+# Load libraries ----
+library(sf)
 library(tidyverse)
+library(magrittr)
+library(rvest)
+library(tools)
+library(mapview)
+library(units)
+
+
+load('data/helpers/initial_vars.RData')
+load('data/helpers/functions.RData')
+out_dir <- 'data/data_out/polys_ag_INEGI_noFMG'
 
 # Remove frijol, maiz, granos from INEGI polygons (cross-check first)
 # INEGI ----
 inegi_polys <- st_read('data/data_out/polys_ag_INEGI_munis.geojson')
-load('data/data_out/r_data/sup_frij_gran.RData')
-inegi_noFMG <- clip_out_polys_from_ag(inegi_polys, sup_frij_gran)
 
-# Save
-save(inegi_noFMG, file='data/data_out/r_data/polys_ag_INEGI_noFMG_AGS.RData')
-load('data/data_out/r_data/polys_ag_INEGI_noFMG_AGS.RData')
+# Run per state ----
+estado = 'VER'
+# remove_FMG_from_ag_INEGI(estado, inegi_polys, fmg_dir)
+# Separate by muni
+remove_FMG_from_ag_INEGI_largefile(estado, inegi_polys, fmg_dir)
 
+# Check results
+# estado = 'MOR'
+fp_out <- file.path(out_dir, str_c('inegi_noFMG_', estado, '.geojson'))
+inegi_noFMG <- st_read(fp_out)
+mapview(inegi_noFMG)
 
-# SIAP ----
-load('data/data_out/r_data/polys_ag_noFMG_AGS.RData')
-siap_noFMG <- ag_noFMG
+inegi_noFMG %>% filter(CVE_MUN == 16) %>% mapview
 
-region='CW'
-siap_ag_fp <- file.path('data/input_data/SIAP/FASII',
-                    str_glue('FASII_{region}_by_municipio.geojson'))
-siap_ag <- st_read(siap_ag_fp)

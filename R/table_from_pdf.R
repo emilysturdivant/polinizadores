@@ -4,9 +4,10 @@
 library(tidyverse)
 
 # Pollinator database in JSON format ----
-data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/avispas_test'
+data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/Completos'
 
-fp <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/avispas_test/Brachygastra mellifica_1.json'
+fp <- file.path(data_dir, 'completo_Abejas.csv')
+abejas <- read_csv(fp)
 txt <- fp %>% readLines %>% paste(collapse='')
 spec <- rjson::fromJSON(txt)
 specs <- spec$results

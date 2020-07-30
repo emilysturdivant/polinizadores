@@ -74,10 +74,17 @@ saveRDS(polys, 'data/data_out/r_data/polys_ag_INEGI.rds')
 polys <- readRDS('data/data_out/r_data/polys_ag_INEGI.rds')
 
 # Intersect with municipios ----------------------------------------------------
-polys_mun <- st_intersection(polys, munis)
+polys_mun <- st_intersection(polys, munis) %>% 
+  mutate(across(where(is.character), 
+                ~ stringi::stri_trans_general(str=.x, id='Latin-ASCII') %>% 
+                  str_trim %>% 
+                  str_to_title),
+         NOM_ENT = str_replace_all(NOM_ENT, 'Distrito Federal', 'Ciudad De Mexico'),
+         NOM_MUN = str_replace_all(NOM_MUN, 'Parras De La Fuente', 'Parras')) 
 
 saveRDS(polys_mun, 'data/data_out/r_data/polys_ag_INEGI_munis.rds')
-st_write(polys_mun, 'data/data_out/polys_ag_INEGI_munis.geojson')
+st_write(inegi_polys, 'data/data_out/polys_ag_INEGI_munis.geojson', delete_dsn=T)
+
 
 # QC -----
 # Check numbers of polygons in each class (TIPAGES)
