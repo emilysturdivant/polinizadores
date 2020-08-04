@@ -2,19 +2,141 @@
 
 # library(tabulizer)
 library(tidyverse)
-
-# Pollinator database in JSON format ----
+library(sf)
+library(mapview)
+library(tools)
+# Pollinator database ----
 data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/Completos'
+fps <- list.files(data_dir, full.names = T)
+fp <- fps[[1]]
 
-fp <- file.path(data_dir, 'completo_Abejas.csv')
-abejas <- read_csv(fp)
-txt <- fp %>% readLines %>% paste(collapse='')
-spec <- rjson::fromJSON(txt)
-specs <- spec$results
-specs[[1]]$decimalLongitude
-specs[[1]]$decimalLatitude
+name <- fp %>% 
+  basename %>% 
+  file_path_sans_ext %>% 
+  str_split('_') %>% 
+  last %>% 
+  last 
+dat <- read_csv(fp)
 
-#---
+# Convert table to simple features data frame ----------------------------------
+# Data tidying steps: drop coords with NAs, drop duplicates, flag/drop imprecise
+df <- dat %>% 
+  drop_na(decimalLongitude, decimalLatitude) %>% 
+  filter(decimalLongitude != 0 & decimalLatitude != 0,
+         coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters),
+         !str_detect(issues, 'COUNTRY_COORDINATE_MISMATCH')) %>% 
+  dplyr::select(key, species, decimalLongitude, decimalLatitude, 
+                eventDate, geodeticDatum, coordinateUncertaintyInMeters, habitat) %>% 
+  distinct %>% 
+  st_as_sf(x = .,                         
+           coords = c("decimalLongitude", "decimalLatitude"),
+           crs = 4326)
+
+# df %>% nrow # 129,366
+df %>% mapview(zcol='coordinateUncertaintyInMeters', cex=4)
+
+# Save ----
+fp_out <- file.path('data/data_out/pollinator_points', str_c(name, '.geojson'))
+df %>% st_write(fp_out, delete_dsn=T)
+
+# Quality checking ----
+# are all points in WGS84?
+dat %>% 
+  select(geodeticDatum) %>% distinct
+# according to geodeticDatum field, they are.
+poss_issues <- dat %>%
+  select(issues) %>% 
+  mutate(issues = str_replace_all(issues, "\\[|\\]|'", '')) %>% 
+  separate_rows(issues, sep=", ") %>% 
+  distinct
+# RECORDED_DATE_UNLIKELY, PRESUMED_NEGATED_LATITUDE, RECORDED_DATE_INVALID,
+# COORDINATE_REPROJECTED, COORDINATE_INVALID, ZERO_COORDINATE, 
+# BASIS_OF_RECORD_INVALID, COORDINATE_ROUNDED
+dat %>% 
+  select(issues, contains('date', ignore.case=T)) %>% 
+  filter(str_detect(issues, 'RECORDED_DATE_UNLIKELY'))
+# All dates are NA where issues include RECORDED_DATE_UNLIKELY
+d1 <- dat %>% 
+  filter(str_detect(issues, 'PRESUMED_NEGATED_LATITUDE')) %>% 
+  # select(issues, decimalLatitude, decimalLongitude, species, eventDate, basisOfRecord) %>% 
+  select(-key) %>% 
+  distinct
+d1
+d1[[1, 1]]
+d1 %>% select(eventID) %>% distinct()
+dat %>% colnames
+# Points with 'PRESUMED_NEGATED_LATITUDE' appear to duplicates: 
+# Same: coords(16.5625, -96.0311), date, species, recordedBy
+# Different keys.
+
+# What is basisOfRecord?
+dat %>% select(basisOfRecord) %>% distinct
+
+# Get tallies -----
+dat %>% nrow
+# 151,192
+dat %>% select(key) %>% distinct %>% nrow
+# Unique keys: 151,145
+dat %>% 
+  filter(is.na(decimalLongitude) | is.na(decimalLatitude)) %>% 
+  nrow
+# Observations with incomplete coordinates: 21,783
+dat %>% 
+  filter(decimalLongitude == 0 | decimalLatitude == 0) %>% 
+  nrow
+# Observations with 0 coordinates: 145
+dat %>% 
+  select(species, decimalLongitude, decimalLatitude, 
+         eventDate, recordedBy, coordinateUncertaintyInMeters, habitat) %>% 
+  duplicated() %>% 
+  sum(na.rm = TRUE)
+# Observations with same species, coordinates, data collector: 100,939
+dat %>% 
+  filter(coordinateUncertaintyInMeters > 1000) %>% 
+  nrow
+# coord uncertainty greater than 1000: 5,180
+dat %>% 
+  drop_na(decimalLongitude, decimalLatitude) %>% 
+  filter(decimalLongitude != 0 & decimalLatitude != 0,
+         coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters)) %>% 
+  distinct %>% 
+  filter(str_detect(issues, 'COUNTRY_COORDINATE_MISMATCH')) -> df1
+# After default filtering: 
+#   COUNTRY_COORDINATE_MISMATCH: 4
+#   COORDINATE_ROUNDED: 88,991 (out of 123,487)
+#   COORDINATE_PRECISION_INVALID: 877 (all of these records have coordinateUncertaintyInMeters == NA)
+#   COORDINATE_INVALID: 0
+#   COORDINATE_UNCERTAINTY_METERS_INVALID: 2
+df1 %>% 
+  select(decimalLongitude, decimalLatitude, coordinateUncertaintyInMeters, country)
+df1 %>% 
+  select(decimalLongitude, decimalLatitude, coordinateUncertaintyInMeters, country) %>% 
+  st_as_sf(x = .,                         
+           coords = c("decimalLongitude", "decimalLatitude"),
+           crs = 4326) %>% 
+  mapview()
+
+# Look ----
+bb <- st_bbox(c(xmin=-104, ymin=20.2, xmax=-103.2, ymax=21), crs=4326)
+df1 <- df %>% st_crop(bb)
+mapview(df1)
+
+fp_munis <- 'data/input_data/context_Mexico/SNIB_divisionpolitica/muni_2018gw/muni_2018gw.shp'
+munis <- st_read(fp_munis) %>% 
+  mutate(CVE_ENT=as.integer(CVE_ENT),
+         CVE_MUN=as.integer(CVE_MUN))
+munis_jal <- munis %>% 
+  st_within(bb)
+st_sf(bb) %>% class
+mapview(df1) + 
+  mapview(munis)
+
+
+
+
+
+
+# Table from PDF attempts ----
 fname <- '/Users/emilysturdivant/GitHub/polinizadores/data_in/Apendice 1.pdf'
 
 # Extract and format part 1 as dataframe

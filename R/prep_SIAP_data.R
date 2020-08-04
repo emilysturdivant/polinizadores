@@ -433,7 +433,6 @@ lookup <- munis %>%
                 ~ stringi::stri_trans_general(str=.x, id='Latin-ASCII')),
          NOM_ENT = str_replace(NOM_ENT, 'Michoacan De Ocampo', 'Michoacan'),
          NOM_ENT = str_replace(NOM_ENT, 'Veracruz De Ignacio De La Llave', 'Veracruz'))
-lookup
 lookup %>% saveRDS('data/helpers/lookup_municipio_codes.rds')
 
 # Pre-process all SIAP agricultural coverage KMZs (2010) -----------------------
