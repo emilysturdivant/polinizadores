@@ -1,14 +1,18 @@
-# Convert Apendice 1 to a dataframe. It looks like this produces some errors. Better just to ask for 
+# Data are from GBIF
+# parameters: https://www.gbif.org/developer/occurrence#parameters
+# Require some sort of aggregation. You can see there are more data in more populated areas, which is probably not representative of pollinator hotspots.
+# There are comparatively few points for flies and we know that can't be representative.
 
 # library(tabulizer)
 library(tidyverse)
 library(sf)
 library(mapview)
 library(tools)
+
 # Pollinator database ----
 data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/Completos'
 fps <- list.files(data_dir, full.names = T)
-fp <- fps[[1]]
+fp <- fps[[6]]
 
 name <- fp %>% 
   basename %>% 
@@ -26,7 +30,8 @@ df <- dat %>%
          coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters),
          !str_detect(issues, 'COUNTRY_COORDINATE_MISMATCH')) %>% 
   dplyr::select(key, species, decimalLongitude, decimalLatitude, 
-                eventDate, geodeticDatum, coordinateUncertaintyInMeters, habitat) %>% 
+                eventDate, geodeticDatum, coordinateUncertaintyInMeters, habitat, 
+                basisOfRecord, country, stateProvince) %>% 
   distinct %>% 
   st_as_sf(x = .,                         
            coords = c("decimalLongitude", "decimalLatitude"),
@@ -109,8 +114,9 @@ dat %>%
 #   COORDINATE_UNCERTAINTY_METERS_INVALID: 2
 df1 %>% 
   select(decimalLongitude, decimalLatitude, coordinateUncertaintyInMeters, country)
-df1 %>% 
-  select(decimalLongitude, decimalLatitude, coordinateUncertaintyInMeters, country) %>% 
+dat %>% 
+  select(decimalLongitude, decimalLatitude, coordinateUncertaintyInMeters, country, stateProvince) %>% 
+  drop_na(decimalLongitude, decimalLatitude) %>% 
   st_as_sf(x = .,                         
            coords = c("decimalLongitude", "decimalLatitude"),
            crs = 4326) %>% 
@@ -137,6 +143,8 @@ mapview(df1) +
 
 
 # Table from PDF attempts ----
+# Convert Apendice 1 to a dataframe. It looks like this produces some errors. Better just to ask for 
+
 fname <- '/Users/emilysturdivant/GitHub/polinizadores/data_in/Apendice 1.pdf'
 
 # Extract and format part 1 as dataframe

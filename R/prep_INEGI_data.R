@@ -32,11 +32,28 @@ if(length(fp_usv)!=1){
 
 # Get Agriculture polygons -----------------------------------------------------
 usv <- st_read(fp_usv, crs=6362) %>% 
-  st_make_valid() %>% 
+  st_make_valid %>% 
   st_transform(4326)
 polys_ag <- usv %>% 
   filter(TIP_INFO == 'AGRÍCOLA-PECUARIA-FORESTAL', 
          CLAVE != 'ACUI')
+
+# Nómada polygons from INEGI - all are nómada (shifting cultivation) -----------
+f.usv <- 'data/input_data/INEGI_2017/conjunto_de_datos/usv250s6n.shp'
+polys_nom <- st_read(f.usv, crs=6362) %>%  
+  st_make_valid %>% 
+  st_transform(4326)
+
+# Merge Nómada with Agriculture
+polys_nom %<>% 
+  mutate(TIPAGES='AGRICULTURA NÓMADA', TIP_CUL1='NÓMADA') %>% 
+  select(!NOM)
+polys <- list(polys_ag, polys_nom) %>% 
+  mapedit:::combine_list_of_sf() %>% 
+  st_make_valid
+
+saveRDS(polys, 'data/data_out/r_data/polys_ag_INEGI.rds')
+polys <- readRDS('data/data_out/r_data/polys_ag_INEGI.rds')
 
 # Exploration... look at polygon counts in different categories ----
 polys_ag %>% 
@@ -56,34 +73,38 @@ polys_ag %>%
   summarise(no_rows = length(CLAVE)) %>% 
   View()
 
-# Nómada polygons from INEGI - all are nómada (shifting cultivation) -----------
-f.usv <- 'data/input_data/INEGI_2017/conjunto_de_datos/usv250s6n.shp'
-polys_nom <- st_read(f.usv, crs=6362) %>%  
-  st_make_valid() %>% 
-  st_transform(4326)
-
-# Merge Nómada with Agriculture
-polys_nom %<>% 
-  mutate(TIPAGES='AGRICULTURA NÓMADA', TIP_CUL1='NÓMADA') %>% 
-  select(!NOM)
-polys <- list(polys_ag, polys_nom) %>% 
-  mapedit:::combine_list_of_sf() %>% 
-  st_make_valid()
-
-saveRDS(polys, 'data/data_out/r_data/polys_ag_INEGI.rds')
-polys <- readRDS('data/data_out/r_data/polys_ag_INEGI.rds')
+# Exploration 2
+polys %>% 
+  st_set_geometry(NULL) %>% 
+  filter(CLAVE == 'PC') %>% 
+  distinct
+polys %>% mapview
+inegi_polys %>% 
+  filter(CVE_ENT == 26) %>% 
+  mapview
 
 # Intersect with municipios ----------------------------------------------------
-polys_mun <- st_intersection(polys, munis) %>% 
-  mutate(across(where(is.character), 
-                ~ stringi::stri_trans_general(str=.x, id='Latin-ASCII') %>% 
-                  str_trim %>% 
-                  str_to_title),
-         NOM_ENT = str_replace_all(NOM_ENT, 'Distrito Federal', 'Ciudad De Mexico'),
-         NOM_MUN = str_replace_all(NOM_MUN, 'Parras De La Fuente', 'Parras')) 
+# polys_mun <- st_intersection(polys, munis) %>% 
+#   mutate(across(where(is.character), 
+#                 ~ stringi::stri_trans_general(str=.x, id='Latin-ASCII') %>% 
+#                   str_trim %>% 
+#                   str_to_title),
+#          NOM_ENT = str_replace_all(NOM_ENT, 'Distrito Federal', 'Ciudad De Mexico'),
+#          NOM_MUN = str_replace_all(NOM_MUN, 'Parras De La Fuente', 'Parras')) 
+
+# Prepare munis for intersection
+mun_for_join <- munis %>%
+  mutate(CVE_ENT=as.integer(CVE_ENT),
+         CVE_MUN=as.integer(CVE_MUN)) %>% 
+  select(-AREA, -PERIMETER, -COV_, -COV_ID)
+
+inegi_polys <- st_intersection(polys, mun_for_join)
+inegi_polys %>% colnames
+inegi_polys %>% select(CLAVE)
+st_write(inegi_polys, 'data/data_out/polys_ag_INEGI.geojson', delete_dsn=T)
+
 
 saveRDS(polys_mun, 'data/data_out/r_data/polys_ag_INEGI_munis.rds')
-st_write(inegi_polys, 'data/data_out/polys_ag_INEGI_munis.geojson', delete_dsn=T)
 
 
 # QC -----
