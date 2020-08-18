@@ -201,62 +201,6 @@ get_area_planted <- function(data, state_id_fld, muni_id_fld, crop_name_fld,
               by=c(quo_name(state_id_fld), quo_name(muni_id_fld), quo_name(riego_id_fld))) %>% 
     as_tibble()
 }
-# ag_by_munis <- ag0
-# spec_polys <- sup_fmg0
-clip_out_polys_from_ag <- function(ag_by_munis, spec_polys, dissolve_by){
-  # Remove FMG from agricultural areas
-  # Preprocess ag and FMG
-  ag_for_diff <- ag_by_munis  %>% 
-    st_transform(crs=6362) %>% 
-    st_make_valid
-  spec_for_diff <- spec_polys %>% 
-    st_union %>% 
-    st_transform(crs=6362) %>% 
-    st_make_valid
-  
-  # Remove FMG from ag
-  ag_noFMG <- st_difference(ag_for_diff, spec_for_diff) %>% 
-    st_collection_extract('POLYGON') 
-# mapview(ag_noFMG)
-# ag_noFMG %>% st_set_geometry(NULL) %>% select(CLAVE) %>% distinct
-  if(missing(dissolve_by)){
-    # If dissolve_by variable not specified, dissolve by all
-    # List columns
-    vars <- ag_for_diff %>% 
-      st_set_geometry(NULL) %>% 
-      colnames()
-    
-    ag_noFMG <- ag_noFMG %>%
-      group_by %>% 
-      summarise(across(all_of(vars))) %>% 
-      ungroup
-  } else {
-    ag_noFMG <- ag_noFMG %>%
-      group_by(CVE_ENT, CVE_MUN, {{dissolve_by}}) %>% 
-      summarise %>% 
-      ungroup
-  }
-  
-  # Tidy the polygons - drop crumbs and fill pinholes
-  ag_noFMG <- ag_noFMG %>%
-    smoothr::fill_holes(threshold=1000) %>%
-    st_buffer(-25) %>% 
-    smoothr::drop_crumbs(4000) %>% 
-    st_buffer(25, endCapStyle='FLAT', joinStyle='MITRE') %>% 
-    smoothr::drop_crumbs(threshold=50000) %>%
-    # st_snap(x=., y=., tolerance = 10) %>% 
-    st_transform(crs=4326) %>% 
-    st_make_valid
-  
-  # Get area for new polygons
-  ag_noFMG$area <- ag_noFMG %>% 
-    st_transform(crs=6362) %>% 
-    st_area %>% 
-    set_units('ha') %>% 
-    set_units(NULL)
-  
-  return(ag_noFMG)
-}
 
 remove_FMG_from_ag_by_state <- function(estado, ag_dir, fmg_dir, out_dir, states_by_region){
   # Get path for output file
@@ -338,15 +282,69 @@ remove_fmg_from_ag_by_muni <- function(cve_mun, ag, sup_fmg, dissolve_by=CLAVE){
   noFMG0 <- clip_out_polys_from_ag(ag0, sup_fmg0, dissolve_by=CLAVE)
   return(noFMG0)
 }
+
+clip_out_polys_from_ag <- function(ag_by_munis, spec_polys, dissolve_by){
+  # Remove FMG from agricultural areas
+  # Preprocess ag and FMG
+  ag_for_diff <- ag_by_munis  %>% 
+    st_transform(crs=6362) %>% 
+    st_make_valid %>% 
+    st_buffer(0)
+  spec_for_diff <- spec_polys %>% 
+    st_transform(crs=6362) %>% 
+    st_snap(x=., y=., tolerance=5) %>% 
+    st_union %>% 
+    st_make_valid %>% 
+    st_buffer(0)
+  
+  # Remove FMG from ag
+  ag_noFMG <- st_difference(ag_for_diff, spec_for_diff) %>% 
+    st_collection_extract('POLYGON') %>% 
+    st_make_valid
+  
+  if(missing(dissolve_by)){
+    # If dissolve_by variable not specified, dissolve by all
+    # List columns
+    vars <- ag_for_diff %>% 
+      select(-area_ha) %>% 
+      st_set_geometry(NULL) %>% 
+      colnames()
+    
+    ag_noFMG <- ag_noFMG %>%
+      group_by %>% 
+      summarise(across(all_of(vars))) %>% 
+      ungroup
+  } else {
+    ag_noFMG <- ag_noFMG %>%
+      group_by(CVE_ENT, CVE_MUN, {{dissolve_by}}) %>% 
+      summarise %>% 
+      ungroup
+  }
+
+  # Tidy the polygons - drop crumbs and fill pinholes
+  ag_noFMG <- ag_noFMG %>%
+    smoothr::fill_holes(threshold=1000) %>%
+    st_buffer(-25) %>% 
+    smoothr::drop_crumbs(4000) %>% 
+    st_buffer(25, endCapStyle='FLAT', joinStyle='MITRE') %>% 
+    smoothr::drop_crumbs(threshold=50000) %>%
+    # st_snap(x=., y=., tolerance = 10) %>% 
+    st_transform(crs=4326) %>% 
+    st_make_valid
+  
+  # Get area for new polygons
+  ag_noFMG$area <- ag_noFMG %>% 
+    st_transform(crs=6362) %>% 
+    st_area %>% 
+    set_units('ha') %>% 
+    set_units(NULL)
+  
+  return(ag_noFMG)
+}
+
 # municipios <- munis
 # ag <- inegi_polys
-# cve_mun <- 1
-# ag %>% filter(CVE_ENT == cve_ent) %>% st_set_geometry(NULL) %>% select(CVE_MUN) %>% distinct
-# vars <- ag %>% st_set_geometry(NULL) %>% colnames
-# agT <- ag %>%
-#   group_by(CVE_ENT, CVE_MUN, CLAVE) %>% 
-#   summarise %>% 
-#   ungroup
+# cve_mun <- 11
 remove_FMG_from_ag_INEGI_largefile <- function(estado, ag, fmg_dir, out_dir, municipios){
   # Get path for output file
   if(missing(out_dir)) out_dir <- 'data/data_out/polys_ag_INEGI_noFMG'
@@ -383,7 +381,7 @@ remove_FMG_from_ag_INEGI_largefile <- function(estado, ag, fmg_dir, out_dir, mun
     distinct 
   cve_muns_int <- inner_join(cve_muns_ag, cve_muns_fmg) %>% deframe
   cve_muns_agonly <- anti_join(cve_muns_ag, cve_muns_fmg) %>% deframe
-  
+
   # Process in for loop and save muni files
   state_dir <- file.path(out_dir, estado)
   unlink(state_dir, recursive=T)
@@ -398,7 +396,7 @@ remove_FMG_from_ag_INEGI_largefile <- function(estado, ag, fmg_dir, out_dir, mun
     sup_fmg0 <- sup_fmg %>% 
       mutate(CVE_MUN = as.integer(CVE_MUN)) %>% 
       filter(CVE_MUN == cve_mun)
-    
+
     # Perform removal
     ag_noFMG0 <- clip_out_polys_from_ag(ag0, sup_fmg0, dissolve_by=CLAVE)
     
