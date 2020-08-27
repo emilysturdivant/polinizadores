@@ -520,8 +520,21 @@ area_cult_otono <- cultivos %>%
   get_area_planted(CVE_ENT, CVE_MUN, Nomcultivo, Idmodalidad, Sembrada, total_sembrada) %>% 
   mutate(Idmodalidad=recode(Idmodalidad, '1' = "R", '2' = "T"))
 
+# filter to spring and year-round
+area_cult_primperen <- cultivos %>% 
+  filter(Idciclo %in% c(2,3)) %>% 
+  get_area_planted(CVE_ENT, CVE_MUN, Nomcultivo, Idmodalidad, Sembrada, total_sembrada) %>% 
+  mutate(Idmodalidad=recode(Idmodalidad, '1' = "R", '2' = "T"))
+
+# filter to fall and year-round
+area_cult_otoperen <- cultivos %>% 
+  filter(Idciclo %in% c(1,3)) %>% 
+  get_area_planted(CVE_ENT, CVE_MUN, Nomcultivo, Idmodalidad, Sembrada, total_sembrada) %>% 
+  mutate(Idmodalidad=recode(Idmodalidad, '1' = "R", '2' = "T"))
+
 # Save
-save(area_cult_peren, area_cult_prim, area_cult_otono, cultivos,
+save(area_cult_peren, area_cult_prim, area_cult_otono, area_cult_primperen, 
+     area_cult_otoperen, cultivos,
      file = "data/data_out/r_data/area_sembrada_by_season_2019.RData")
 
 # Municipio polygons -----------------------------------------------------------

@@ -35,7 +35,7 @@ load("data/data_out/r_data/area_sembrada_by_season_2019.RData")
 join_siap_crop_stats_to_polys <- function(estado){
   cve_ent <- est_to_cve[[estado]]
   final_fp_out <- file.path('data/data_out/polys_ag_INEGI_wFMG_pcts', 
-                            str_c('inegi_pcts_prim19_', estado, '.geojson'))
+                            str_c('inegi_pcts_otoperen19_', estado, '.geojson'))
   if (file.exists(final_fp_out)) return(final_fp_out)
   
   # Add polys from FMG with pct == 1.0 ----
@@ -82,11 +82,12 @@ join_siap_crop_stats_to_polys <- function(estado){
   
   # SIAP stats to percents ------
   # Filter [primavera] to state, remove and columns with all NA values
-  df <- area_cult_prim %>% 
+  df <- area_cult_otoperen %>% 
     filter(CVE_ENT==cve_ent) %>% 
     select_if(~sum(!is.na(.)) > 0)
+  
+  # Remove FMG columns if FMG data exists
   if(class(sup_fmg) != 'try-error'){
-    # Remove FMG columns if FMG data exists
     df <- df %>% 
       select(!contains(c('maíz', 'frijol', 'sorgo', 'trigo', 'triticale'))) 
   }
@@ -136,7 +137,7 @@ join_siap_crop_stats_to_polys <- function(estado){
   return(TRUE)
 }
 
-# estado <- 'BC'
+estado <- 'MICH'
 for(estado in names(est_to_cve)){
   join_siap_crop_stats_to_polys(estado)
 }

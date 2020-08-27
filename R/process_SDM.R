@@ -133,6 +133,24 @@ predictors[['lc']] <- predictors[['lc']] %>% as.factor
 
 mapview(predictors)
 
+# Extract values for ANPs ------------------------------------------------------
+anp_fp <- 'data/input_data/context_Mexico/SHAPE_ANPS/182ANP_Geo_ITRF08_Julio04_2019.shp'
+anps <- st_read(anp_fp) %>% 
+  st_transform(crs=4326) %>% 
+  as('Spatial')
+
+lyrs <- c('lc', # ESA land cover (LCCS product)
+          'alt', # SRTM altitude
+          'bio1', # mean annual temp
+          'bio4', # temp seasonality
+          'bio12', # total annual precipitation
+          'bio15' # precipitation seasonality
+)
+predictors_slim <- predictors[[lyrs]]
+predictors_num <- predictors_slim[[-1]]
+anp_vals <- raster::extract(predictors_num, anps, fun=mean, na.rm=T, sp=T)
+anp_vals %>% head
+
 # Extract values for (basic) modeling ------------------------------------------
 presvals <- raster::extract(predictors, df_sp)
 

@@ -184,9 +184,24 @@ df <- df %>%
 df %>% saveRDS('data/data_out/r_data/gbif_pol_points.rds')
 
 
+# Get count for each ANP -------------------------------------------------------
+df <- readRDS('data/data_out/r_data/gbif_pol_points.rds')
+anp_fp <- 'data/input_data/context_Mexico/SHAPE_ANPS/182ANP_Geo_ITRF08_Julio04_2019.shp'
+anps <- st_read(anp_fp)
 
+# reproject points to ITRF
+df_itrf <- df %>% st_transform_proj(crs=st_crs(anps))
 
+# Join ANP polys to points and group by ANP
+df_anp <- st_join(df_itrf, anps['NOMBRE']) %>% 
+  filter(!is.na(NOMBRE)) %>% 
+  group_by(NOMBRE, species) %>% 
+  summarise(cnt = length(species))
 
+# List ANP names 
+df_anp %>% st_set_geometry(NULL) %>% select(NOMBRE) %>% distinct %>% deframe
 
-
+# Look at species in given ANP 
+# (they don't exactly match the "ANPs and Polinizadores de Mexico" table from Mauricio)
+df_anp %>% filter(NOMBRE == "La Primavera")
 
