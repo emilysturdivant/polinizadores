@@ -8,16 +8,17 @@ library(sf)
 library(mapview)
 library(tools)
 library(rgdal)
-library(spatstat)
+# library(spatstat)
 library(raster)
 library(tmap)
 library(leaflet)
 library(tidyverse)
+library(patchwork)
 
 # Pollinator database ----
 data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/Completos'
 fps <- list.files(data_dir, full.names = T)
-fp <- fps[[6]]
+fp <- fps[[1]]
 
 (name <- fp %>% 
   basename %>% 
@@ -26,7 +27,7 @@ fp <- fps[[6]]
   last %>% 
   last )
 dat <- read_csv(fp)
-# dat %>% colnames
+
 # Look around ------------------------------------------------------------------
 dat %>% filter(coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters)) %>% nrow
 dat %>% filter(coordinateUncertaintyInMeters > 1000) %>% nrow
@@ -43,7 +44,123 @@ df <- dat %>%
 df %>% filter(institutionCode != 'iNaturalist') %>% nrow
 df %>% filter(institutionCode == 'iNaturalist') %>% nrow
 
+# Data exploration plots -------------------------------------------------------
+# Species
+if (dat %>% select(species) %>% distinct %>% nrow > 10){
+  # Genus bar chart
+  spec <- ggplot(dat, aes(x=genus, fill=species)) +
+    geom_bar(position='stack', show.legend = FALSE) +
+    coord_flip() +
+    theme_minimal() +
+    labs(
+      x = NULL,
+      y = NULL,
+      title = 'species'
+    )
+} else {
+  # Species bar chart
+  spec <- ggplot(dat, aes(x=species)) +
+    geom_bar() +
+    coord_flip() +
+    theme_minimal() +
+    labs(
+      x = NULL,
+      y = NULL,
+      title = 'species'
+    )
+}
 
+# basisOfRecord
+rec1 <- ggplot(dat, aes(x=basisOfRecord)) +
+  geom_bar() +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = 'basisOfRecord'
+  )
+# by species
+rec2 <- ggplot(dat, aes(fill=basisOfRecord, x = species)) +
+  geom_bar(position='stack') +
+  coord_flip() +
+  theme_minimal() + 
+  theme(legend.position='bottom', legend.title=element_blank()) +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = 'basisOfRecord'
+  )
+
+(coords_hist <- dat %>% 
+    mutate(coordinateUncertaintyInMeters = replace_na(coordinateUncertaintyInMeters, -5000)) %>% 
+ggplot(aes(x=coordinateUncertaintyInMeters)) +
+  geom_histogram() +
+  # coord_flip() +
+  theme_minimal() +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = 'coordinateUncertaintyInMeters'
+  ))
+
+ord_unc_class <- c("NA", "<1 km", "1-2 km", "2-3 km", ">3 km")
+uncertainty_cnts <- dat %>%
+  mutate(coordinateUncertainty = case_when(
+    is.na(.$coordinateUncertaintyInMeters) ~ "NA",
+    .$coordinateUncertaintyInMeters >=  0 & .$coordinateUncertaintyInMeters <= 1000   ~ "<1 km",
+    .$coordinateUncertaintyInMeters >  1000 & .$coordinateUncertaintyInMeters <= 2000    ~ "1-2 km",
+    .$coordinateUncertaintyInMeters >  2000 & .$coordinateUncertaintyInMeters <= 3000   ~ "2-3 km",
+    .$coordinateUncertaintyInMeters >  3000 & .$coordinateUncertaintyInMeters <= 10000000  ~ ">3 km"
+  ),
+  coordinateUncertainty = fct_relevel(coordinateUncertainty, ord_unc_class))
+(coords1 <- ggplot(uncertainty_cnts, aes(x = coordinateUncertainty)) +
+  geom_bar(stat='count', show.legend = FALSE) +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = 'coordinateUncertainty'
+  ))
+coords2 <- uncertainty_cnts %>% 
+  group_by(coordinateUncertainty, basisOfRecord) %>%
+  summarize(cnt = length(coordinateUncertainty)) %>% 
+  ggplot(aes(fill=basisOfRecord, x = coordinateUncertainty, y =cnt)) +
+  geom_bar(position='stack', stat='identity', show.legend = FALSE) +
+  # coord_flip() +
+  theme_minimal() +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = 'coordinateUncertainty'
+  )
+
+# Dates
+(edates <- ggplot(dat, aes(eventDate, ..count..)) + 
+    geom_histogram() +
+    theme_minimal() +
+    labs(
+      x = NULL,
+      y = NULL,
+      title = 'eventDate'
+    ) + 
+    scale_x_datetime(breaks = date_breaks("25 years"),
+                     labels = date_format("%Y"),
+                     limits = c(as.POSIXct("1835-01-01"),
+                                as.POSIXct("2020-12-01")) ))
+# Simple
+(spec + coords1) / rec1
+(spec | rec1) / (coords_hist | edates)
+ggsave(file.path('figures', str_c('pol_', name, '_simple4.png')), width = 8.15, height=6.03)
+
+# More
+(spec + coords2) / rec2
+
+
+
+
+# Tables -----
 (species_cnt <- dat %>% 
   group_by(species) %>% 
   summarise(cnt = length(species)) %>% 
@@ -53,50 +170,37 @@ df %>% filter(institutionCode == 'iNaturalist') %>% nrow
   summarise(cnt = length(basisOfRecord)) %>% 
     arrange(desc(cnt)))
 # Number of species in each basisOfRecord
-(species_basis_cnt <- dat %>% 
-    group_by(species, basisOfRecord) %>% 
-    summarise(cnt = length(species)) %>% 
-    pivot_wider(id_cols=species, names_from=basisOfRecord, values_from=cnt) %>% 
-    left_join(species_cnt) %>% 
-    relocate(cnt, .after=species))
-(species_basis_cnt <- dat %>% 
-    group_by(species, basisOfRecord) %>% 
-    summarise(cnt = length(species)) %>% 
-    arrange(desc(cnt)))
-ggplot(species_basis_cnt, aes(fill=basisOfRecord, x = species, y =cnt)) +
-  geom_bar(position='stack', stat='identity') +
-  coord_flip() +
-  theme_bw()
-ggplot(dat, aes(fill=basisOfRecord, x = species)) +
-  geom_bar(position='stack') +
-  coord_flip() +
-  theme_bw()
-dat %>% mutate(coordinateUncertaintyInMeters = replace_na(coordinateUncertaintyInMeters, -1)) %>% 
-ggplot(aes(fill=coordinateUncertaintyInMeters, x = species)) +
-  geom_bar(position='stack') +
-  coord_flip() +
-  theme_bw()
+# (species_basis_cnt <- dat %>% 
+#     group_by(species, basisOfRecord) %>% 
+#     summarise(cnt = length(species)) %>% 
+#     pivot_wider(id_cols=species, names_from=basisOfRecord, values_from=cnt) %>% 
+#     left_join(species_cnt) %>% 
+#     relocate(cnt, .after=species))
 # Unique habitat values and quantity
 (habitat_cnt <- dat %>% 
-  group_by(habitat) %>% 
-  summarise(cnt = length(habitat)) %>% 
+    group_by(habitat) %>% 
+    summarise(cnt = length(habitat)) %>% 
     arrange(desc(cnt)))
-# Number of species recorded by each institution
+# Number of records from each institution
 institutionCode_owners <- dat %>% 
   group_by(institutionCode, ownerInstitutionCode) %>% 
   summarise() %>% 
   drop_na(ownerInstitutionCode)
-institution_cnt <- dat %>% 
-  group_by(institutionCode) %>% 
-  summarise(cnt = length(institutionCode)) %>% 
-  left_join(institutionCode_owners) %>% 
-    arrange(desc(cnt))
+(institution_cnt <- dat %>% 
+    group_by(institutionCode) %>% 
+    summarise(cnt = length(institutionCode)) %>% 
+    left_join(institutionCode_owners) %>% 
+    arrange(desc(cnt)))
+
+
+# Number of species recorded by each institution
 (species_inst_cnt <- dat %>% 
     group_by(species, institutionCode) %>% 
     summarise(cnt = length(species)) %>% 
     pivot_wider(id_cols=institutionCode, names_from=species, values_from=cnt) %>% 
     left_join(institution_cnt) %>% 
     relocate(cnt, .after=institutionCode))
+
 
 # dates
 (eventDate_cnt <- dat %>% 
@@ -114,34 +218,31 @@ institution_cnt <- dat %>%
 # All points with eventDate are also missing dateIdentified
 
 # non-categorical variables: coordinateUncertainty, eventDate
-dat %>% 
-  select(coordinateUncertaintyInMeters) %>%
-  deframe %>%
-  hist(main='coordinateUncertaintyInMeters')
-
-ord_unc_class <- c("<1 km", "1-2 km", "2-3 km", ">3 km")
-(unc_cnts <- dat %>%
-  mutate(coordinateUncertainty = case_when(
-    .$coordinateUncertaintyInMeters >=  0 & .$coordinateUncertaintyInMeters <= 1000   ~ "<1 km",
-    .$coordinateUncertaintyInMeters >  1000 & .$coordinateUncertaintyInMeters <= 2000    ~ "1-2 km",
-    .$coordinateUncertaintyInMeters >  2000 & .$coordinateUncertaintyInMeters <= 3000   ~ "2-3 km",
-    .$coordinateUncertaintyInMeters >  3000 & .$coordinateUncertaintyInMeters <= 10000  ~ ">3 km"
-  ),
-    coordinateUncertainty = fct_relevel(coordinateUncertainty, ord_unc_class)) %>% 
-  group_by(coordinateUncertainty, basisOfRecord) %>%
-  summarize(cnt = length(coordinateUncertainty))
-  )
-ggplot(unc_cnts, aes(fill=basisOfRecord, x = coordinateUncertainty, y =cnt)) +
-  geom_bar(position='stack', stat='identity') +
-  theme_bw()
-
 
 dat %>% 
   select(eventDate) %>% 
   deframe %>% 
   hist(main='eventDate')
 
-  
+library("ggplot2")
+library("scales")
+
+dates <- read.csv("http://pastebin.com/raw.php?i=sDzXKFxJ", sep=",", header=T)
+dates$Date <- as.POSIXct(dates$Date)
+dat %>% 
+  # mutate(eventDate = as.POSIXct(eventDate)) %>% 
+  select(eventDate) %>% head
+
+(edates <- ggplot(dat, aes(eventDate, ..count..)) + 
+  geom_histogram() +
+  theme_minimal() + 
+  xlab(NULL) +
+  scale_x_datetime(breaks = date_breaks("25 years"),
+                   labels = date_format("%Y"),
+                   limits = c(as.POSIXct("1835-01-01"),
+                              as.POSIXct("2020-12-01")) ))
+
+p
 
 # Convert table to simple features data frame ----------------------------------
 # Data tidying steps: drop coords with NAs, drop duplicates, flag/drop imprecise
