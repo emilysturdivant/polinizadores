@@ -4,23 +4,144 @@
 # There are comparatively few points for flies and we know that can't be representative.
 
 # library(tabulizer)
-library(tidyverse)
 library(sf)
 library(mapview)
 library(tools)
+library(rgdal)
+library(spatstat)
+library(raster)
+library(tmap)
+library(leaflet)
+library(tidyverse)
 
 # Pollinator database ----
 data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/Completos'
 fps <- list.files(data_dir, full.names = T)
 fp <- fps[[6]]
 
-name <- fp %>% 
+(name <- fp %>% 
   basename %>% 
   file_path_sans_ext %>% 
   str_split('_') %>% 
   last %>% 
-  last 
+  last )
 dat <- read_csv(fp)
+# dat %>% colnames
+# Look around ------------------------------------------------------------------
+dat %>% filter(coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters)) %>% nrow
+dat %>% filter(coordinateUncertaintyInMeters > 1000) %>% nrow
+dat %>% filter(is.na(coordinateUncertaintyInMeters)) %>% nrow
+dat %>% select(coordinatePrecision) %>% distinct
+
+dat %>% nrow
+df <- dat %>% 
+  drop_na(decimalLongitude, decimalLatitude) %>% 
+  filter(decimalLongitude != 0 & decimalLatitude != 0,
+         coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters),
+         !str_detect(issues, 'COUNTRY_COORDINATE_MISMATCH'))
+
+df %>% filter(institutionCode != 'iNaturalist') %>% nrow
+df %>% filter(institutionCode == 'iNaturalist') %>% nrow
+
+
+(species_cnt <- dat %>% 
+  group_by(species) %>% 
+  summarise(cnt = length(species)) %>% 
+    arrange(desc(cnt)))
+(basisOfRecord_cnt <- dat %>% 
+  group_by(basisOfRecord) %>% 
+  summarise(cnt = length(basisOfRecord)) %>% 
+    arrange(desc(cnt)))
+# Number of species in each basisOfRecord
+(species_basis_cnt <- dat %>% 
+    group_by(species, basisOfRecord) %>% 
+    summarise(cnt = length(species)) %>% 
+    pivot_wider(id_cols=species, names_from=basisOfRecord, values_from=cnt) %>% 
+    left_join(species_cnt) %>% 
+    relocate(cnt, .after=species))
+(species_basis_cnt <- dat %>% 
+    group_by(species, basisOfRecord) %>% 
+    summarise(cnt = length(species)) %>% 
+    arrange(desc(cnt)))
+ggplot(species_basis_cnt, aes(fill=basisOfRecord, x = species, y =cnt)) +
+  geom_bar(position='stack', stat='identity') +
+  coord_flip() +
+  theme_bw()
+ggplot(dat, aes(fill=basisOfRecord, x = species)) +
+  geom_bar(position='stack') +
+  coord_flip() +
+  theme_bw()
+dat %>% mutate(coordinateUncertaintyInMeters = replace_na(coordinateUncertaintyInMeters, -1)) %>% 
+ggplot(aes(fill=coordinateUncertaintyInMeters, x = species)) +
+  geom_bar(position='stack') +
+  coord_flip() +
+  theme_bw()
+# Unique habitat values and quantity
+(habitat_cnt <- dat %>% 
+  group_by(habitat) %>% 
+  summarise(cnt = length(habitat)) %>% 
+    arrange(desc(cnt)))
+# Number of species recorded by each institution
+institutionCode_owners <- dat %>% 
+  group_by(institutionCode, ownerInstitutionCode) %>% 
+  summarise() %>% 
+  drop_na(ownerInstitutionCode)
+institution_cnt <- dat %>% 
+  group_by(institutionCode) %>% 
+  summarise(cnt = length(institutionCode)) %>% 
+  left_join(institutionCode_owners) %>% 
+    arrange(desc(cnt))
+(species_inst_cnt <- dat %>% 
+    group_by(species, institutionCode) %>% 
+    summarise(cnt = length(species)) %>% 
+    pivot_wider(id_cols=institutionCode, names_from=species, values_from=cnt) %>% 
+    left_join(institution_cnt) %>% 
+    relocate(cnt, .after=institutionCode))
+
+# dates
+(eventDate_cnt <- dat %>% 
+    group_by(eventDate) %>% 
+    summarise(cnt = length(eventDate)) %>% 
+    arrange(desc(cnt)))
+(eventDate_cnt <- dat %>% 
+    group_by(dateIdentified) %>% 
+    summarise(cnt = length(dateIdentified)) %>% 
+    arrange(desc(cnt)))
+(eventDate_cnt <- dat %>% 
+    group_by(eventDate, dateIdentified) %>% 
+    summarise(cnt = length(eventDate)) %>% 
+    arrange(desc(cnt)))
+# All points with eventDate are also missing dateIdentified
+
+# non-categorical variables: coordinateUncertainty, eventDate
+dat %>% 
+  select(coordinateUncertaintyInMeters) %>%
+  deframe %>%
+  hist(main='coordinateUncertaintyInMeters')
+
+ord_unc_class <- c("<1 km", "1-2 km", "2-3 km", ">3 km")
+(unc_cnts <- dat %>%
+  mutate(coordinateUncertainty = case_when(
+    .$coordinateUncertaintyInMeters >=  0 & .$coordinateUncertaintyInMeters <= 1000   ~ "<1 km",
+    .$coordinateUncertaintyInMeters >  1000 & .$coordinateUncertaintyInMeters <= 2000    ~ "1-2 km",
+    .$coordinateUncertaintyInMeters >  2000 & .$coordinateUncertaintyInMeters <= 3000   ~ "2-3 km",
+    .$coordinateUncertaintyInMeters >  3000 & .$coordinateUncertaintyInMeters <= 10000  ~ ">3 km"
+  ),
+    coordinateUncertainty = fct_relevel(coordinateUncertainty, ord_unc_class)) %>% 
+  group_by(coordinateUncertainty, basisOfRecord) %>%
+  summarize(cnt = length(coordinateUncertainty))
+  )
+ggplot(unc_cnts, aes(fill=basisOfRecord, x = coordinateUncertainty, y =cnt)) +
+  geom_bar(position='stack', stat='identity') +
+  theme_bw()
+
+
+dat %>% 
+  select(eventDate) %>% 
+  deframe %>% 
+  hist(main='eventDate')
+
+  
 
 # Convert table to simple features data frame ----------------------------------
 # Data tidying steps: drop coords with NAs, drop duplicates, flag/drop imprecise
@@ -28,21 +149,134 @@ df <- dat %>%
   drop_na(decimalLongitude, decimalLatitude) %>% 
   filter(decimalLongitude != 0 & decimalLatitude != 0,
          coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters),
-         !str_detect(issues, 'COUNTRY_COORDINATE_MISMATCH')) %>% 
+         !str_detect(issues, 'COUNTRY_COORDINATE_MISMATCH'), 
+         institutionCode != 'iNaturalist') %>% 
   dplyr::select(key, species, decimalLongitude, decimalLatitude, 
-                eventDate, geodeticDatum, coordinateUncertaintyInMeters, habitat, 
-                basisOfRecord, country, stateProvince) %>% 
+                eventDate, coordinateUncertaintyInMeters, habitat, 
+                basisOfRecord, country, stateProvince, institutionCode) %>% 
   distinct %>% 
   st_as_sf(x = .,                         
            coords = c("decimalLongitude", "decimalLatitude"),
            crs = 4326)
 
+df %>% st_set_geometry(NULL) %>% select(habitat) %>% distinct
+df %>% 
+  st_set_geometry(NULL) %>% 
+  group_by(habitat) %>% 
+  summarize(cnt = length(habitat))
+
 # df %>% nrow # 129,366
-df %>% mapview(zcol='coordinateUncertaintyInMeters', cex=4)
+# df %>% mapview(zcol='coordinateUncertaintyInMeters', cex=4)
+# df %>% mapview(zcol='species', cex=4)
+
+df %>% st_set_geometry(NULL) %>% select(species) %>% distinct
 
 # Save ----
 fp_out <- file.path('data/data_out/pollinator_points', str_c(name, '.geojson'))
 df %>% st_write(fp_out, delete_dsn=T)
+
+# Hotspot --------------------------
+mex <- raster::getData('GADM', country='MEX', level=0, 
+               path='data/input_data/context_Mexico') %>%
+  spTransform(CRSobj=CRS('+proj=utm +zone=13 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs '))
+
+# Using spatstat https://maczokni.github.io/crimemapping_textbook_bookdown/studying-spatial-point-patterns.html#inspecting-our-data-with-spatstat ----
+fp_out <- file.path('data/data_out/pollinator_points', str_c(name, '.geojson'))
+df <- st_read(fp_out)
+mex <- raster::getData('GADM', country='MEX', level=0, 
+               path='data/input_data/context_Mexico') %>% 
+  st_as_sf(crs=4326) 
+pts <- df #%>% st_crop(st_bbox(mex))
+tm_shape(mex) + 
+  tm_fill() +
+  tm_shape(pts) +
+  tm_dots(alpha=0.4, size=1)
+
+# start using spatstat
+mex_sp <- as(mex, 'Spatial') %>% 
+  spTransform(CRSobj=CRS('+proj=utm +zone=13 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs '))
+window <- maptools::as.owin.SpatialPolygons(mex_sp)
+
+# extract coordinates into a matrix
+pts <- pts %>% 
+  st_transform('+proj=utm +zone=13 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs ')
+pts_coords <- matrix(unlist(pts$geometry), ncol = 2, byrow = T)
+
+pts_ppp <- ppp(x = pts_coords[,1], y = pts_coords[,2],
+               window = window, check = T)
+jitter_pts <- rjitter(pts_ppp, retry=T, nsim=1, drop=T)
+
+# Count quadrants
+# Q <- quadratcount(jitter_pts, nx = 4, ny = 3)
+# plot(jitter_pts)
+# plot(Q, add = TRUE, cex = 2)
+
+# Run a Chi Square test to check whether there's a statistically significant pattern
+# quadrat.test(jitter_pts, nx = 3, ny = 2)
+
+# Generate the density raster
+dmap1 <- density.ppp(jitter_pts, sigma = bw.ppl(jitter_pts), edge=T)
+r1 <- raster(dmap1)
+r1[r1 < 0.00000001 ] <- NA
+crs(r1) <- sp::CRS('+proj=utm +zone=13 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs ')
+pal <- colorNumeric(c("#0C2C84", "#41B6C4", "#FFFFCC"), values(r1),
+                    na.color = "transparent")
+leaflet() %>% 
+  # setView(lng = -2.225814, lat = 53.441315, zoom = 14) %>% 
+  addTiles() %>%
+  addRasterImage(r1, colors = pal, opacity = 0.8) %>%
+  addLegend(pal = pal, values = values(r1),
+            title = "Bat map")
+
+dmap2 <- density.ppp(jitter_pts, sigma = bw.diggle(jitter_pts), edge=T)
+r2 <- raster(dmap1)
+r2[r2 < 0.00000001 ] <- NA
+crs(r2) <- sp::CRS('+proj=utm +zone=13 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs ')
+pal <- colorNumeric(c("#0C2C84", "#41B6C4", "#FFFFCC"), values(r2),
+                    na.color = "transparent")
+leaflet() %>% 
+  # setView(lng = -2.225814, lat = 53.441315, zoom = 14) %>% 
+  addTiles() %>%
+  addRasterImage(r2, colors = pal, opacity = 0.8) %>%
+  addLegend(pal = pal, values = values(r2),
+            title = "Mariposas")
+
+fp_out <- file.path('data/data_out/r_data', str_c('density_', name, '.rdata'))
+save(dmap1, dmap2, jitter_pts, file=fp_out)
+
+
+
+# Using adehabitatHR and guide by James Cheshire https://spatial.ly/2017/12/pointpatterns/ ----
+crop_dir <- file.path('data', 'input_data', 'environment_variables', 'cropped')
+ext <- mex %>%
+  extent
+resolution <- 500
+
+# Create empty grid
+x <- seq(ext[1],ext[2],by=resolution)  # where resolution is the pixel size you desire
+y <- seq(ext[3],ext[4],by=resolution)
+xy <- expand.grid(x=x,y=y)
+coordinates(xy) <- ~x+y
+gridded(xy) <- TRUE
+plot(xy)
+plot(mex, border="red", add=T)
+
+# Create regular sample (not necessary)
+xy <- st_sample(st_as_sfc(st_bbox(ext)), size=7000, type="regular")
+plot(xy)
+plot(mex, add=T)
+
+# Run density estimation
+pts_sp <- df %>% 
+  # st_transform(crs=6368) %>% 
+  as('Spatial') %>%
+  spTransform(CRSobj=CRS('+proj=utm +zone=13 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs '))
+all <- raster(kernelUD(pts_sp, h="href", grid = xy)) 
+#First results
+plot(all)
+plot(pts_sp)
+plot(mex, border="red", add=T)
+
 
 # Quality checking ----
 # are all points in WGS84?

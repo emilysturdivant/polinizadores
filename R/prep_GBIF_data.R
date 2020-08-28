@@ -110,7 +110,8 @@ dat <- readRDS(str_c('data/data_out/r_data/gbif_polinizadores.RData'))
 dat %>% colnames
 dat %>% select(contains('issues'), contains('status')) %>% distinct
 dat %>% select(contains('date')) %>% colnames
-dat %>% select(occurrenceRemarks) %>% distinct
+dat %>% select(eventDate) %>% distinct
+dat %>% select(occurrenceRemarks, institutionCode) %>% distinct
 dat %>% select(hasGeospatialIssues, issue) %>% distinct
 dat %>% select(basisOfRecord) %>% distinct
 dat %>% select(dateIdentified) %>% distinct
