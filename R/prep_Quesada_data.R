@@ -19,7 +19,7 @@ library(scales)
 # Pollinator database ----
 data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/Completos'
 fps <- list.files(data_dir, full.names = T)
-fp <- fps[[2]]
+fp <- fps[[4]]
 
 (name <- fp %>% 
   basename %>% 
@@ -83,7 +83,7 @@ institution_cnt %>% write_csv(file.path('figures', str_c('pol_', name, '_institu
 
 # Data exploration plots -------------------------------------------------------
 # Species
-if (dat %>% select(species) %>% distinct %>% nrow < 10){
+if (dat %>% select(species) %>% distinct %>% nrow < 17){
   # Species bar chart
   spec <- ggplot(dat, aes(x=species)) +
     geom_bar(position='stack', show.legend = FALSE) +
@@ -222,7 +222,7 @@ patchwork + plot_annotation(
   title = glue::glue('{name}: {tot_goodcoords} registros evaluados'),
   subtitle = glue::glue('{tot_badcoords} registros eliminados por falta de coordenadas')
 )
-ggsave(file.path('figures', str_c('pol_', name, '_simple4.png')), width = 8.15, height=6.03)
+ggsave(file.path('figures', str_c('pol_', name, '_simple5.png')), width = 9.15, height=6.03)
 
 # --------------------
 # dates
@@ -259,7 +259,7 @@ df <- dat %>%
            crs = 4326)
 
 # Maps -----
-df %>% mapview(zcol='coordinateUncertaintyInMeters', cex=4)
+# df %>% mapview(zcol='coordinateUncertaintyInMeters', cex=4)
 
 gen_list <- species_cnt %>% slice(1:16) %>% select(genus) %>% deframe
 df_gen2 <- df %>% filter(genus %in% gen_list)
