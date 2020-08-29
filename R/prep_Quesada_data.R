@@ -14,11 +14,12 @@ library(tmap)
 library(leaflet)
 library(tidyverse)
 library(patchwork)
+library(scales)
 
 # Pollinator database ----
 data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/Completos'
 fps <- list.files(data_dir, full.names = T)
-fp <- fps[[1]]
+fp <- fps[[2]]
 
 (name <- fp %>% 
   basename %>% 
@@ -29,45 +30,91 @@ fp <- fps[[1]]
 dat <- read_csv(fp)
 
 # Look around ------------------------------------------------------------------
-dat %>% filter(coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters)) %>% nrow
-dat %>% filter(coordinateUncertaintyInMeters > 1000) %>% nrow
-dat %>% filter(is.na(coordinateUncertaintyInMeters)) %>% nrow
-dat %>% select(coordinatePrecision) %>% distinct
-
-dat %>% nrow
-df <- dat %>% 
+tot <- dat %>% nrow
+tot_badcoords <- dat %>% 
+  filter(is.na(decimalLongitude) | is.na(decimalLatitude) |
+                 decimalLongitude == 0 | decimalLatitude == 0) %>% 
+  nrow %>% 
+  format(big.mark=',', trim=T)
+dat <- dat %>% 
   drop_na(decimalLongitude, decimalLatitude) %>% 
   filter(decimalLongitude != 0 & decimalLatitude != 0,
-         coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters),
          !str_detect(issues, 'COUNTRY_COORDINATE_MISMATCH'))
+tot_goodcoords <- dat %>% 
+  nrow %>% 
+  format(big.mark=',', trim=T)
 
-df %>% filter(institutionCode != 'iNaturalist') %>% nrow
-df %>% filter(institutionCode == 'iNaturalist') %>% nrow
+# Tables -----
+(species_cnt <- dat %>% 
+   group_by(genus) %>% 
+   summarise(cnt = length(genus)) %>% 
+   arrange(desc(cnt)))
+
+(basisOfRecord_cnt <- dat %>% 
+    group_by(basisOfRecord) %>% 
+    summarise(cnt = length(basisOfRecord)) %>% 
+    arrange(desc(cnt)))
+# Number of species in each basisOfRecord
+# (species_basis_cnt <- dat %>% 
+#     group_by(species, basisOfRecord) %>% 
+#     summarise(cnt = length(species)) %>% 
+#     pivot_wider(id_cols=species, names_from=basisOfRecord, values_from=cnt) %>% 
+#     left_join(species_cnt) %>% 
+#     relocate(cnt, .after=species))
+# Unique habitat values and quantity
+(habitat_cnt <- dat %>% 
+    group_by(habitat) %>% 
+    summarise(cnt = length(habitat)) %>% 
+    arrange(desc(cnt)))
+tot_hab <- dat %>% select(habitat) %>% distinct %>% nrow
+habitat_cnt %>% write_csv(file.path('figures', str_c('pol_', name, '_habitats.csv')))
+
+# Number of records from each institution
+institutionCode_owners <- dat %>% 
+  group_by(institutionCode, ownerInstitutionCode) %>% 
+  summarise() %>% 
+  drop_na(ownerInstitutionCode)
+(institution_cnt <- dat %>% 
+    group_by(institutionCode) %>% 
+    summarise(cnt = length(institutionCode)) %>% 
+    left_join(institutionCode_owners) %>% 
+    arrange(desc(cnt)))
+institution_cnt %>% write_csv(file.path('figures', str_c('pol_', name, '_institutions.csv')))
 
 # Data exploration plots -------------------------------------------------------
 # Species
-if (dat %>% select(species) %>% distinct %>% nrow > 10){
-  # Genus bar chart
-  spec <- ggplot(dat, aes(x=genus, fill=species)) +
+if (dat %>% select(species) %>% distinct %>% nrow < 10){
+  # Species bar chart
+  spec <- ggplot(dat, aes(x=species)) +
     geom_bar(position='stack', show.legend = FALSE) +
     coord_flip() +
     theme_minimal() +
     labs(
       x = NULL,
       y = NULL,
-      title = 'species'
+      title = 'Especies',
+      subtitle = glue::glue('Número de géneros únicos: {tot_genus}\n Número de especies únicas: {tot_species}')
     )
 } else {
-  # Species bar chart
-  spec <- ggplot(dat, aes(x=species)) +
-    geom_bar() +
-    coord_flip() +
-    theme_minimal() +
-    labs(
-      x = NULL,
-      y = NULL,
-      title = 'species'
-    )
+  # Genus bar chart
+  (species_cnt <- dat %>% 
+     group_by(genus) %>% 
+     summarise(cnt = length(genus)) %>% 
+     arrange(desc(cnt)))
+  tot_species <- dat %>% select(species) %>% distinct %>% nrow
+  tot_genus <- dat %>% select(genus) %>% distinct %>% nrow
+  (spec <- species_cnt %>% 
+      slice(1:40) %>% 
+      ggplot(aes(x=reorder(genus, cnt), y=cnt)) +
+      geom_bar(stat='identity', show.legend = FALSE) +
+      coord_flip() +
+      theme_minimal() +
+      labs(
+        x = NULL,
+        y = NULL,
+        title = 'Géneros',
+        subtitle = glue::glue('Número de géneros únicos: {tot_genus}\n Número de especies únicas: {tot_species}')
+      ))
 }
 
 # basisOfRecord
@@ -92,7 +139,7 @@ rec2 <- ggplot(dat, aes(fill=basisOfRecord, x = species)) +
     title = 'basisOfRecord'
   )
 
-(coords_hist <- dat %>% 
+coords_hist <- dat %>% 
     mutate(coordinateUncertaintyInMeters = replace_na(coordinateUncertaintyInMeters, -5000)) %>% 
 ggplot(aes(x=coordinateUncertaintyInMeters)) +
   geom_histogram() +
@@ -102,7 +149,7 @@ ggplot(aes(x=coordinateUncertaintyInMeters)) +
     x = NULL,
     y = NULL,
     title = 'coordinateUncertaintyInMeters'
-  ))
+  )
 
 ord_unc_class <- c("NA", "<1 km", "1-2 km", "2-3 km", ">3 km")
 uncertainty_cnts <- dat %>%
@@ -139,6 +186,7 @@ coords2 <- uncertainty_cnts %>%
 # Dates
 (edates <- ggplot(dat, aes(eventDate, ..count..)) + 
     geom_histogram() +
+    coord_flip() +
     theme_minimal() +
     labs(
       x = NULL,
@@ -149,59 +197,34 @@ coords2 <- uncertainty_cnts %>%
                      labels = date_format("%Y"),
                      limits = c(as.POSIXct("1835-01-01"),
                                 as.POSIXct("2020-12-01")) ))
+
+# Institutions
+tot_inst <- dat %>% select(institutionCode) %>% distinct %>% nrow
+(insts <- institution_cnt %>% 
+    slice(1:40) %>% 
+    ggplot(aes(x=reorder(institutionCode, cnt), y=cnt)) +
+    geom_bar(stat='identity', show.legend = FALSE) +
+    coord_flip() +
+    theme_minimal() +
+    labs(
+      x = NULL,
+      y = NULL,
+      title = 'institutionCode',
+      subtitle = glue::glue('Número de "institutionCode" únicos: {tot_inst}')
+    ))
+
 # Simple
-(spec + coords1) / rec1
-(spec | rec1) / (coords_hist | edates)
+# (spec + coords1) / rec1
+# (spec | rec1) / (coords_hist | edates)
+patchwork <- spec | (rec1 / coords1 / edates)
+patchwork <- spec | ((rec1 / coords1) / edates) | insts
+patchwork + plot_annotation(
+  title = glue::glue('{name}: {tot_goodcoords} registros evaluados'),
+  subtitle = glue::glue('{tot_badcoords} registros eliminados por falta de coordenadas')
+)
 ggsave(file.path('figures', str_c('pol_', name, '_simple4.png')), width = 8.15, height=6.03)
 
-# More
-(spec + coords2) / rec2
-
-
-
-
-# Tables -----
-(species_cnt <- dat %>% 
-  group_by(species) %>% 
-  summarise(cnt = length(species)) %>% 
-    arrange(desc(cnt)))
-(basisOfRecord_cnt <- dat %>% 
-  group_by(basisOfRecord) %>% 
-  summarise(cnt = length(basisOfRecord)) %>% 
-    arrange(desc(cnt)))
-# Number of species in each basisOfRecord
-# (species_basis_cnt <- dat %>% 
-#     group_by(species, basisOfRecord) %>% 
-#     summarise(cnt = length(species)) %>% 
-#     pivot_wider(id_cols=species, names_from=basisOfRecord, values_from=cnt) %>% 
-#     left_join(species_cnt) %>% 
-#     relocate(cnt, .after=species))
-# Unique habitat values and quantity
-(habitat_cnt <- dat %>% 
-    group_by(habitat) %>% 
-    summarise(cnt = length(habitat)) %>% 
-    arrange(desc(cnt)))
-# Number of records from each institution
-institutionCode_owners <- dat %>% 
-  group_by(institutionCode, ownerInstitutionCode) %>% 
-  summarise() %>% 
-  drop_na(ownerInstitutionCode)
-(institution_cnt <- dat %>% 
-    group_by(institutionCode) %>% 
-    summarise(cnt = length(institutionCode)) %>% 
-    left_join(institutionCode_owners) %>% 
-    arrange(desc(cnt)))
-
-
-# Number of species recorded by each institution
-(species_inst_cnt <- dat %>% 
-    group_by(species, institutionCode) %>% 
-    summarise(cnt = length(species)) %>% 
-    pivot_wider(id_cols=institutionCode, names_from=species, values_from=cnt) %>% 
-    left_join(institution_cnt) %>% 
-    relocate(cnt, .after=institutionCode))
-
-
+# --------------------
 # dates
 (eventDate_cnt <- dat %>% 
     group_by(eventDate) %>% 
@@ -217,42 +240,17 @@ institutionCode_owners <- dat %>%
     arrange(desc(cnt)))
 # All points with eventDate are also missing dateIdentified
 
-# non-categorical variables: coordinateUncertainty, eventDate
-
-dat %>% 
-  select(eventDate) %>% 
-  deframe %>% 
-  hist(main='eventDate')
-
-library("ggplot2")
-library("scales")
-
-dates <- read.csv("http://pastebin.com/raw.php?i=sDzXKFxJ", sep=",", header=T)
-dates$Date <- as.POSIXct(dates$Date)
-dat %>% 
-  # mutate(eventDate = as.POSIXct(eventDate)) %>% 
-  select(eventDate) %>% head
-
-(edates <- ggplot(dat, aes(eventDate, ..count..)) + 
-  geom_histogram() +
-  theme_minimal() + 
-  xlab(NULL) +
-  scale_x_datetime(breaks = date_breaks("25 years"),
-                   labels = date_format("%Y"),
-                   limits = c(as.POSIXct("1835-01-01"),
-                              as.POSIXct("2020-12-01")) ))
-
-p
-
 # Convert table to simple features data frame ----------------------------------
+mex <- raster::getData('GADM', country='MEX', level=1, 
+                       path='data/input_data/context_Mexico') %>% 
+  st_as_sf(crs=4326) 
 # Data tidying steps: drop coords with NAs, drop duplicates, flag/drop imprecise
 df <- dat %>% 
   drop_na(decimalLongitude, decimalLatitude) %>% 
   filter(decimalLongitude != 0 & decimalLatitude != 0,
          coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters),
-         !str_detect(issues, 'COUNTRY_COORDINATE_MISMATCH'), 
-         institutionCode != 'iNaturalist') %>% 
-  dplyr::select(key, species, decimalLongitude, decimalLatitude, 
+         !str_detect(issues, 'COUNTRY_COORDINATE_MISMATCH')) %>% 
+  dplyr::select(species, genus, decimalLongitude, decimalLatitude, 
                 eventDate, coordinateUncertaintyInMeters, habitat, 
                 basisOfRecord, country, stateProvince, institutionCode) %>% 
   distinct %>% 
@@ -260,23 +258,39 @@ df <- dat %>%
            coords = c("decimalLongitude", "decimalLatitude"),
            crs = 4326)
 
-df %>% st_set_geometry(NULL) %>% select(habitat) %>% distinct
-df %>% 
+# Maps -----
+df %>% mapview(zcol='coordinateUncertaintyInMeters', cex=4)
+
+gen_list <- species_cnt %>% slice(1:16) %>% select(genus) %>% deframe
+df_gen2 <- df %>% filter(genus %in% gen_list)
+(tm <- tm_shape(mex) +
+  tm_borders(col='darkgray') + 
+  tm_shape(df_gen2) +
+  tm_dots(alpha=0.4, size=.1, col = '#b10026') +
+  tm_facets(by = 'genus', free.coords=F))
+tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_genus_16.png')))
+
+spec_list <- df %>% 
   st_set_geometry(NULL) %>% 
-  group_by(habitat) %>% 
-  summarize(cnt = length(habitat))
+  group_by(species) %>% 
+  summarise(cnt = length(species)) %>% 
+  arrange(desc(cnt)) %>% 
+  slice(1:16) %>% 
+  select(species) %>% 
+  deframe
+df_spec1 <- df %>% filter(species %in% spec_list)
+(tm <- tm_shape(mex) +
+    tm_borders(col='darkgray') + 
+  tm_shape(df_spec1) +
+    tm_dots(alpha=0.4, size=.1, col = '#0c2c84') +
+  tm_facets(by = 'species', free.coords=F))
+tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_species_16.png')))
 
-# df %>% nrow # 129,366
-# df %>% mapview(zcol='coordinateUncertaintyInMeters', cex=4)
-# df %>% mapview(zcol='species', cex=4)
-
-df %>% st_set_geometry(NULL) %>% select(species) %>% distinct
-
-# Save ----
+# Save -------------------------------------------------------------------------
 fp_out <- file.path('data/data_out/pollinator_points', str_c(name, '.geojson'))
 df %>% st_write(fp_out, delete_dsn=T)
 
-# Hotspot --------------------------
+# Hotspot ----------------------------------------------------------------------
 mex <- raster::getData('GADM', country='MEX', level=0, 
                path='data/input_data/context_Mexico') %>%
   spTransform(CRSobj=CRS('+proj=utm +zone=13 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs '))
