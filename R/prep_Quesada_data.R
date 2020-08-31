@@ -19,7 +19,7 @@ library(scales)
 # Pollinator database ----
 data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/Completos'
 fps <- list.files(data_dir, full.names = T)
-fp <- fps[[4]]
+fp <- fps[[6]]
 
 (name <- fp %>% 
   basename %>% 
@@ -75,6 +75,11 @@ institutionCode_owners <- dat %>%
   summarise() %>% 
   drop_na(ownerInstitutionCode)
 (institution_cnt <- dat %>% 
+    mutate(institutionCode = case_when(
+      institutionCode =='C.A. Triplehorn Insect Collection, Ohio State University, Columbus, OH (OSUC)' ~ 'OSUC',
+      institutionCode =='Cleveland Museum of Natural History, OH (CLEV)' ~ 'CLEV',
+      institutionCode !='C.A. Triplehorn Insect Collection, Ohio State University, Columbus, OH (OSUC)' ~ institutionCode )
+    ) %>% 
     group_by(institutionCode) %>% 
     summarise(cnt = length(institutionCode)) %>% 
     left_join(institutionCode_owners) %>% 
@@ -82,46 +87,56 @@ institutionCode_owners <- dat %>%
 institution_cnt %>% write_csv(file.path('figures', str_c('pol_', name, '_institutions.csv')))
 
 # Data exploration plots -------------------------------------------------------
+theme_desc <- function () { 
+  theme_minimal() +
+    theme(
+      plot.subtitle = element_text(size = 10),
+      plot.title.position = "plot",
+      axis.text.x = element_text(angle = 45)
+    )
+}
+
 # Species
-if (dat %>% select(species) %>% distinct %>% nrow < 17){
+tot_species <- dat %>% select(species) %>% distinct %>% nrow
+tot_genus <- dat %>% select(genus) %>% distinct %>% nrow
+if (tot_species < 17){
+  title <- 'Especies'
   # Species bar chart
-  spec <- ggplot(dat, aes(x=species)) +
-    geom_bar(position='stack', show.legend = FALSE) +
+  species_cnt <- dat %>% 
+     group_by(species) %>% 
+     summarise(cnt = length(species)) %>% 
+     arrange(desc(cnt))
+  spec1 <- species_cnt %>% 
+    ggplot(aes(x=reorder(species, cnt), y=cnt))
+} else {
+  title <- 'Géneros'
+  # Genus bar chart
+  species_cnt <- dat %>% 
+     group_by(genus) %>% 
+     summarise(cnt = length(genus)) %>% 
+     arrange(desc(cnt))
+  spec1 <- species_cnt %>% 
+      slice(1:40) %>% 
+      ggplot(aes(x=reorder(genus, cnt), y=cnt))
+}
+(spec <- spec1 +
+    geom_bar(stat='identity', show.legend = FALSE) +
     coord_flip() +
-    theme_minimal() +
+    theme_desc() +
+    scale_y_continuous(labels = comma)  +
     labs(
       x = NULL,
       y = NULL,
-      title = 'Especies',
-      subtitle = glue::glue('Número de géneros únicos: {tot_genus}\n Número de especies únicas: {tot_species}')
-    )
-} else {
-  # Genus bar chart
-  (species_cnt <- dat %>% 
-     group_by(genus) %>% 
-     summarise(cnt = length(genus)) %>% 
-     arrange(desc(cnt)))
-  tot_species <- dat %>% select(species) %>% distinct %>% nrow
-  tot_genus <- dat %>% select(genus) %>% distinct %>% nrow
-  (spec <- species_cnt %>% 
-      slice(1:40) %>% 
-      ggplot(aes(x=reorder(genus, cnt), y=cnt)) +
-      geom_bar(stat='identity', show.legend = FALSE) +
-      coord_flip() +
-      theme_minimal() +
-      labs(
-        x = NULL,
-        y = NULL,
-        title = 'Géneros',
-        subtitle = glue::glue('Número de géneros únicos: {tot_genus}\n Número de especies únicas: {tot_species}')
-      ))
-}
+      title = title,
+      subtitle = glue::glue('Valores únicos de "genus": {tot_genus}\nValores únicos de "species": {tot_species}')
+    ))
 
 # basisOfRecord
 rec1 <- ggplot(dat, aes(x=basisOfRecord)) +
   geom_bar() +
   coord_flip() +
-  theme_minimal() +
+  theme_desc() +
+  scale_y_continuous(labels = comma)  +
   labs(
     x = NULL,
     y = NULL,
@@ -131,8 +146,12 @@ rec1 <- ggplot(dat, aes(x=basisOfRecord)) +
 rec2 <- ggplot(dat, aes(fill=basisOfRecord, x = species)) +
   geom_bar(position='stack') +
   coord_flip() +
-  theme_minimal() + 
-  theme(legend.position='bottom', legend.title=element_blank()) +
+  theme_desc() +
+  theme(
+    legend.position='bottom', 
+    legend.title=element_blank()
+  ) +
+  scale_y_continuous(labels = comma)  + 
   labs(
     x = NULL,
     y = NULL,
@@ -144,7 +163,8 @@ coords_hist <- dat %>%
 ggplot(aes(x=coordinateUncertaintyInMeters)) +
   geom_histogram() +
   # coord_flip() +
-  theme_minimal() +
+  theme_desc() +
+  scale_y_continuous(labels = comma)  +
   labs(
     x = NULL,
     y = NULL,
@@ -162,21 +182,23 @@ uncertainty_cnts <- dat %>%
   ),
   coordinateUncertainty = fct_relevel(coordinateUncertainty, ord_unc_class))
 (coords1 <- ggplot(uncertainty_cnts, aes(x = coordinateUncertainty)) +
-  geom_bar(stat='count', show.legend = FALSE) +
-  coord_flip() +
-  theme_minimal() +
-  labs(
-    x = NULL,
-    y = NULL,
-    title = 'coordinateUncertainty'
-  ))
+    geom_bar(stat='count', show.legend = FALSE) +
+    coord_flip() +
+    theme_desc() +
+    scale_y_continuous(labels = comma)  +
+    labs(
+      x = NULL,
+      y = NULL,
+      title = 'coordinateUncertainty'
+    ))
 coords2 <- uncertainty_cnts %>% 
   group_by(coordinateUncertainty, basisOfRecord) %>%
   summarize(cnt = length(coordinateUncertainty)) %>% 
   ggplot(aes(fill=basisOfRecord, x = coordinateUncertainty, y =cnt)) +
   geom_bar(position='stack', stat='identity', show.legend = FALSE) +
   # coord_flip() +
-  theme_minimal() +
+  theme_desc() +
+  scale_y_continuous(labels = comma)  +
   labs(
     x = NULL,
     y = NULL,
@@ -187,7 +209,8 @@ coords2 <- uncertainty_cnts %>%
 (edates <- ggplot(dat, aes(eventDate, ..count..)) + 
     geom_histogram() +
     coord_flip() +
-    theme_minimal() +
+    theme_desc() +
+    scale_y_continuous(labels = comma)  +
     labs(
       x = NULL,
       y = NULL,
@@ -205,18 +228,20 @@ tot_inst <- dat %>% select(institutionCode) %>% distinct %>% nrow
     ggplot(aes(x=reorder(institutionCode, cnt), y=cnt)) +
     geom_bar(stat='identity', show.legend = FALSE) +
     coord_flip() +
-    theme_minimal() +
+    theme_desc() +
     labs(
       x = NULL,
       y = NULL,
       title = 'institutionCode',
-      subtitle = glue::glue('Número de "institutionCode" únicos: {tot_inst}')
-    ))
+      subtitle = glue::glue('Valores únicos: {tot_inst}')
+      ) +
+    scale_y_continuous(labels = comma) 
+    )
 
 # Simple
 # (spec + coords1) / rec1
 # (spec | rec1) / (coords_hist | edates)
-patchwork <- spec | (rec1 / coords1 / edates)
+# patchwork <- spec | (rec1 / coords1 / edates)
 patchwork <- spec | ((rec1 / coords1) / edates) | insts
 patchwork + plot_annotation(
   title = glue::glue('{name}: {tot_goodcoords} registros evaluados'),
