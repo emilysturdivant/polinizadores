@@ -1,144 +1,188 @@
 
 # Load libraries ----
 library(sf)
+# library(magrittr)
+# library(rvest)
+# library(tools)
+# library(mapview)
+library(tmap)
+# library(units)
+library(stringdist)
 library(tidyverse)
-library(magrittr)
-library(rvest)
-library(tools)
-library(mapview)
-library(units)
 
 # Load pre-created objects (from prep_SIAP_data.R)
 load('data/helpers/initial_vars.RData')
 load('data/helpers/functions.RData')
-out_dir <- 'data/data_out/polys_ag_INEGI_noFMG'
-fmg_dir <- 'data/data_out/polys_fmg'
+crops_dir <- 'data/data_out/polys_ag_INEGI_wFMG_pcts'
+pol_pt_dir <- 'data/data_out/pollinator_points'
 
-# Remove frijol, maiz, granos from INEGI polygons ----
-# INEGI
-inegi_polys <- st_read('data/data_out/polys_ag_INEGI.geojson')
-# Municipio polygons 
-fp_munis <- 'data/input_data/context_Mexico/SNIB_divisionpolitica/muni_2018gw/muni_2018gw.shp'
-munis <- st_read(fp_munis) %>% 
-  mutate(CVE_ENT=as.integer(CVE_ENT),
-         CVE_MUN=as.integer(CVE_MUN))
+# Choose a crop ----------------------------------------------------------------
+cult <- 'Melón'
+cult <- 'Cucumis melo'
 
-# Run per state
-estado = 'PUE' 
+# Get pollinator points for given crop -----------------------------------------
+# List relevant pollinators ----
+# Import CSV (sep=';')f rom Apendice2
+fname <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/Apendice2.csv'
+df <- read_delim(fname, delim=';', trim_ws=T) %>% 
+  fill(Familia, Cultivo) %>% 
+  mutate(genus = str_replace_all(Polinizador, ' .*$', ''))
+# df %>% dplyr::select(Grupo) %>% distinct
 
-# Separate by muni
-remove_FMG_from_ag_INEGI_largefile(estado, inegi_polys, fmg_dir, municipios=munis)
+# Get list of pollinators for chosen crop
+pols <- df %>% 
+  filter(Cultivo == cult) %>% 
+  dplyr::select(Polinizador, genus) 
 
-# Join SIAP crop stats to polygons ---------------------------------------------
+# Get the pollinator distribution ----
+# Create dir for files
+cultivo_dir <- file.path(pol_pt_dir, 'pollinators_by_crop', 
+                         str_replace_all(cult, ' ', '_'))
+unlink(cultivo_dir, recursive=T)
+dir.create(cultivo_dir)
+
+# Points for one group
+filter_pts <- function(fp, pols, cultivo_dir){
+  
+  pts <- st_read(fp)
+  
+  # Filter points to genus in list
+  pts_no_geom <- pts %>% 
+    st_set_geometry(NULL)
+  
+  pts_gen_list <- pts_no_geom %>% 
+    dplyr::select(genus) %>% 
+    distinct %>% 
+    deframe
+  
+  pols_filt <- pols %>% 
+    filter(
+      genus %in% pts_gen_list
+      )
+  
+  if(nrow(pols_filt) < 1) return()
+  
+  # Dissolve points by species
+  pts_diss <- pts %>% 
+    group_by(species, genus, family, order) %>% 
+    summarize %>% 
+    ungroup
+  
+  # Separate pollinators into those with species match vs. those with genus match
+  pts_spec_list <- pts_no_geom %>% 
+    dplyr::select(species) %>% 
+    distinct %>% 
+    deframe
+  
+  pols_specs_filt <- pols %>% 
+    filter(Polinizador %in% pts_spec_list)
+  
+  pols_gen_filt <- pols_filt %>% 
+    filter(!Polinizador %in% pts_spec_list)
+  
+  # Filter points conditionally to genus or species
+  out_pts <- pts_diss %>% 
+    filter(
+      genus %in% pols_gen_filt$genus | 
+      species %in% pols_specs_filt$Polinizador
+      )
+
+  # Create file name
+  name <- fp %>% 
+      basename %>% 
+      file_path_sans_ext
+  fp_out <- file.path(cultivo_dir, str_c(
+      name, '_', str_replace_all(cult, ' ', '_'), '.geojson')
+    )
+  
+  # Write file
+  out_pts %>% st_write(fp_out, delete_dsn=T, driver='GeoJSON')
+  
+  # Return filename
+  return(fp_out)
+}
+
+# Get matching points from each pollinator group
+fps <- list.files(pol_pt_dir, pattern='.geojson', full.names = T)
+fps %>% map(filter_pts, pols, cultivo_dir)
+
+# Merge files from individual municipios
+out_pts <- list.files(cultivo_dir, full.names=T) %>% 
+  map(st_read) %>% 
+  mapedit:::combine_list_of_sf()
+
+# Save file
+fp_out <- file.path(pol_pt_dir, 'pollinators_by_crop', 
+                    str_c(str_replace_all(cult, ' ', '_'), '.geojson'))
+out_pts %>% st_write(fp_out, delete_dsn=T, driver='GeoJSON')
+out_pts <- st_read(fp_out)
+
+# Get crop polygons ------------------------------------------------------------
+# Get states where crop is grown ----
+# Load 
 load("data/data_out/r_data/area_sembrada_by_season_2019.RData")
 
-join_siap_crop_stats_to_polys <- function(estado){
-  cve_ent <- est_to_cve[[estado]]
-  final_fp_out <- file.path('data/data_out/polys_ag_INEGI_wFMG_pcts', 
-                            str_c('inegi_pcts_otoperen19_', estado, '.geojson'))
-  if (file.exists(final_fp_out)) return(final_fp_out)
-  
-  # Add polys from FMG with pct == 1.0 ----
-  sup_fmg <- 
-    try({
-      sup_fmg <- load_and_preprocess_fmg(estado, fmg_dir, T, munis, prefix='fmg_siap15_') %>% 
-        mutate(CVE_MUN = as.integer(CVE_MUN),
-               CVE_ENT = as.integer(CVE_ENT)) %>% 
-        filter(CVE_ENT == as.integer(cve_ent))
-      
-      # Create FMG columns
-      try({
-        sup_fmg <- sup_fmg %>%
-          rename('area' = 'area_ha')
-      })
-      sup_fmg <- sup_fmg %>%
-        mutate(CULTIVO = 
-                 stringi::stri_trans_general(str=CULTIVO, id='Latin-ASCII') %>%
-                 str_trim %>%
-                 str_to_lower,
-               'Frijol' = recode(CULTIVO, 'frijol' = 1.0, .default=NA_real_), 
-               'Maíz grano' = recode(CULTIVO, 'maiz grano' = 1.0, .default=NA_real_), 
-               'Sorgo grano' = recode(CULTIVO, 'sorgo grano' = 1.0, .default=NA_real_),
-               'Trigo grano' = recode(CULTIVO, 'trigo grano' = 1.0, .default=NA_real_),
-               count_crops = 1, 
-               total_sembrada = area) %>% 
-        select(-contains(c('CULTIVO', 'NOM_MUN', 'DELEGACIÓN', 'Name', 'NOM_ENT', 'CVEGEO')))
-    })
+# Get matching crop name
+vars <- area_cult_primperen %>% colnames
+colnum <- amatch('Melón', vars, maxDist=1)
+(var <- vars[[colnum]])
 
-  # Ag polys ----
-  # Get path for input file
-  ag_dir <- 'data/data_out/polys_ag_INEGI_noFMG'
-  ag_fp <- file.path(ag_dir, str_c('inegi_noFMG_', estado, '.geojson'))
-  
-  # Read data
-  ag_noFMG <- st_read(ag_fp)
-  
-  # create column that indicates Temporal o Riego (Idmodalidad) based on CLAVE
-  ag_noFMG <- ag_noFMG %>% 
-    mutate(CLAVE = str_replace(CLAVE, 'H', 'T'), 
-           Idmodalidad = str_extract(CLAVE, '[HNTR]') %>% 
-             str_replace_all('H|N', 'T')) %>% 
-    filter(str_detect(CLAVE, '^[NRT]')) 
-  
-  # SIAP stats to percents ------
-  # Filter [primavera] to state, remove and columns with all NA values
-  df <- area_cult_otoperen %>% 
-    filter(CVE_ENT==cve_ent) %>% 
-    select_if(~sum(!is.na(.)) > 0)
-  
-  # Remove FMG columns if FMG data exists
-  if(class(sup_fmg) != 'try-error'){
-    df <- df %>% 
-      select(!contains(c('maíz', 'frijol', 'sorgo', 'trigo', 'triticale'))) 
-  }
-  
-  # List columns
-  vars <- df %>% 
-    select(-CVE_ENT:-total_sembrada) %>% 
-    colnames()
-  
-  # Get new total area 
-  df$total_noFMG <- df %>% 
-    select(all_of(vars)) %>% 
-    rowSums(na.rm=T)
-  df %<>% relocate(total_noFMG, .after=total_sembrada)
-  
-  # Get number of different crops planted
-  df$count_crops <- df %>% 
-    select(all_of(vars)) %>% 
-    is.na %>% 
-    `!` %>% 
-    rowSums
-  df %<>% relocate(count_crops, .before=total_sembrada)
-  
-  # Get percent of agricultural land of each crop 
-  pct_sembrada_noFMG <- df %>% 
-    mutate(across(
-      .cols = all_of(vars), 
-      .fns = ~ .x / total_noFMG
-    )) 
-  
-  # Join ------
-  ag_pct_cult_noFMG <- left_join(ag_noFMG, pct_sembrada_noFMG, 
-                                 by=c('CVE_ENT', 'CVE_MUN', 'Idmodalidad'))
-  
-  # Combine with general ag
-  if(class(sup_fmg) != 'try-error'){
-    sup_new <- mapedit:::combine_list_of_sf(list(ag_pct_cult_noFMG, sup_fmg))
-  } else {
-    sup_new <- ag_pct_cult_noFMG
-  }
+# Get states where crop is grown
+state_cves <- area_cult_primperen %>% 
+  filter(across(all_of(var), ~ !is.na(.x))) %>% 
+  select(CVE_ENT) %>% 
+  distinct
 
-  # mapview(sup_new) #+ mapview(sup_fmg)
+# Get state codes
+est_to_cve_tbl <- est_to_cve %>% 
+  as_tibble(rownames = 'estado') %>% 
+  filter(value %in% state_cves$CVE_ENT)
+
+# Get files matching state codes
+search_str <- str_c('.*primperen.*(', 
+                str_c(est_to_cve_tbl$estado, collapse='|'), 
+                ')\\.geojson')
+fps <- list.files(crops_dir, pattern=search_str, full.names=T)
+
+fp <- fps[[1]]
+
+filter_polys <- function(fp, var){
+  # Load polygons for state
+  polys <- st_read(fp)
   
-  # ***** SAVE ***** ----
-  sup_new %>% 
-    st_write(final_fp_out, delete_dsn=T)
-  return(TRUE)
+  # Filter to crop of interest
+  polys %>%
+    filter(across(var, ~ !is.na(.x))) %>%
+    select(CVE_ENT:total_noFMG, all_of(var))
 }
 
-estado <- 'MICH'
-for(estado in names(est_to_cve)){
-  join_siap_crop_stats_to_polys(estado)
-}
+polys_crop <- filter_polys(fp)
 
+polys_all <- fps %>% 
+  map(filter_polys, var) %>%
+  mapedit:::combine_list_of_sf()
+
+var <- 'Melon'
+fp_out <- file.path('data/data_out/polys_ag_INEGI_wFMG_pcts/specific_crops', 
+                    str_c(var, '.geojson'))
+polys_all %>% st_write(fp_out)
+
+# Map --------------------------------------------------------------------------
+mex <- raster::getData('GADM', country='MEX', level=2, 
+    path='data/input_data/context_Mexico') %>% 
+  st_as_sf(crs=4326) 
+
+tmaptools::palette_explorer()
+tmap_mode('view')
+(tm <- tm_shape(mex) +
+    tm_borders(col='darkgray') + 
+    tm_shape(polys_all) +
+    tm_fill(col = 'Melón', palette='YlGnBu', legend.show=T) +
+    tm_shape(out_pts) +
+    tm_dots(alpha=0.4, size=.1, col = 'family', palette=c('#b10026', '#0c2c84'), legend.show=F) 
+    # tm_dots(alpha=0.4, size=.1, col = 'black') +
+    # tm_facets(by = 'genus', free.coords=F)
+    )
+# tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_species_25.png')))
+
+# 

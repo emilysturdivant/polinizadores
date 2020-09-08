@@ -3,7 +3,7 @@
 # Require some sort of aggregation. You can see there are more data in more populated areas, which is probably not representative of pollinator hotspots.
 # There are comparatively few points for flies and we know that can't be representative.
 
-# library(tabulizer)
+library(tabulizer)
 library(sf)
 library(mapview)
 library(tools)
@@ -12,9 +12,10 @@ library(rgdal)
 library(raster)
 library(tmap)
 library(leaflet)
-library(tidyverse)
 library(patchwork)
 library(scales)
+library(taxize)
+library(tidyverse)
 
 # Pollinator database ----
 data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/Completos'
@@ -28,6 +29,46 @@ fp <- fps[[6]]
   last %>% 
   last )
 dat <- read_csv(fp)
+
+fam_list <- dat %>% 
+  dplyr::select(family) %>% 
+  distinct %>% 
+  mutate(superfamily = tax_name(family, get='superfamily', db='ncbi')[[3]])
+
+dat <- dat %>% 
+  left_join(fam_list) 
+
+if(name == 'Mariposas'){
+  dat <- dat %>% 
+    mutate(nocturna = case_when(
+      superfamily %in% c('Papilionoidea', 'Hesperioidea', 'Hedyloidea') ~ 'diurna',
+      !is.na(superfamily) ~ 'nocturna'
+    ))
+}
+
+dat %>% write_csv(file.path(data_dir, 'extras', str_c(name, '.csv')))
+# dat <- read_csv(file.path(data_dir, 'extras', str_c(name, '.csv')))
+
+# Data tidying steps: drop coords with NAs, drop duplicates, flag/drop imprecise
+vars <- c('species', 'genus', 'family', 'superfamily', 'order', 'nocturna', 
+          'decimalLongitude', 'decimalLatitude', 
+          'eventDate', 'coordinateUncertaintyInMeters', 'habitat', 
+          'basisOfRecord', 'country', 'stateProvince', 'institutionCode')
+df <- dat %>% 
+  drop_na(decimalLongitude, decimalLatitude) %>% 
+  filter(decimalLongitude != 0 & decimalLatitude != 0,
+         coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters),
+         !str_detect(issues, 'COUNTRY_COORDINATE_MISMATCH'),
+         institutionCode != 'iNaturalist') %>% 
+  dplyr::select(matches(vars)) %>% 
+  distinct %>% 
+  st_as_sf(x = .,                         
+           coords = c("decimalLongitude", "decimalLatitude"),
+           crs = 4326)
+
+# Save ----
+fp_out <- file.path('data/data_out/pollinator_points', str_c(name, '.geojson'))
+df %>% st_write(fp_out, delete_dsn=T)
 
 # Look around ------------------------------------------------------------------
 tot <- dat %>% nrow
@@ -54,13 +95,7 @@ tot_goodcoords <- dat %>%
     group_by(basisOfRecord) %>% 
     summarise(cnt = length(basisOfRecord)) %>% 
     arrange(desc(cnt)))
-# Number of species in each basisOfRecord
-# (species_basis_cnt <- dat %>% 
-#     group_by(species, basisOfRecord) %>% 
-#     summarise(cnt = length(species)) %>% 
-#     pivot_wider(id_cols=species, names_from=basisOfRecord, values_from=cnt) %>% 
-#     left_join(species_cnt) %>% 
-#     relocate(cnt, .after=species))
+
 # Unique habitat values and quantity
 (habitat_cnt <- dat %>% 
     group_by(habitat) %>% 
@@ -97,8 +132,10 @@ theme_desc <- function () {
 }
 
 # Species
-tot_species <- dat %>% select(species) %>% distinct %>% nrow
-tot_genus <- dat %>% select(genus) %>% distinct %>% nrow
+tot_species <- dat %>% select(species) %>% distinct %>% nrow %>% 
+  format(big.mark=',', trim=T)
+tot_genus <- dat %>% select(genus) %>% distinct %>% nrow %>% 
+  format(big.mark=',', trim=T)
 if (tot_species < 17){
   title <- 'Especies'
   # Species bar chart
@@ -119,6 +156,29 @@ if (tot_species < 17){
       slice(1:40) %>% 
       ggplot(aes(x=reorder(genus, cnt), y=cnt))
 }
+title <- 'Familias'
+# Family bar chart
+(species_cnt <- dat %>% 
+  group_by(family) %>% 
+  summarise(cnt = length(family)) %>% 
+  arrange(desc(cnt)))
+spec1 <- species_cnt %>% 
+  slice(1:40) %>% 
+  ggplot(aes(x=reorder(family, cnt), y=cnt))
+
+# superfamily bar chart
+title <- 'Super-Familias'
+tot_sfam <- dat %>% select(superfamily) %>% distinct %>% nrow %>% 
+  format(big.mark=',', trim=T)
+tot_fam <- dat %>% select(family) %>% distinct %>% nrow %>% 
+  format(big.mark=',', trim=T)
+(species_cnt <- dat %>% 
+    group_by(superfamily) %>% 
+    summarise(cnt = length(superfamily)) %>% 
+    arrange(desc(cnt)))
+spec1 <- species_cnt %>% 
+  slice(1:40) %>% 
+  ggplot(aes(x=reorder(superfamily, cnt), y=cnt))
 (spec <- spec1 +
     geom_bar(stat='identity', show.legend = FALSE) +
     coord_flip() +
@@ -128,7 +188,11 @@ if (tot_species < 17){
       x = NULL,
       y = NULL,
       title = title,
-      subtitle = glue::glue('Valores únicos de "genus": {tot_genus}\nValores únicos de "species": {tot_species}')
+      subtitle = str_c('Valores únicos de "superfamily": ', tot_sfam,
+                       '\nValores únicos de "family": ', tot_fam, 
+                       '\nValores únicos de "genus": ', tot_genus, 
+                       '\nValores únicos de "species": ', tot_species
+                       )
     ))
 
 # basisOfRecord
@@ -141,34 +205,6 @@ rec1 <- ggplot(dat, aes(x=basisOfRecord)) +
     x = NULL,
     y = NULL,
     title = 'basisOfRecord'
-  )
-# by species
-rec2 <- ggplot(dat, aes(fill=basisOfRecord, x = species)) +
-  geom_bar(position='stack') +
-  coord_flip() +
-  theme_desc() +
-  theme(
-    legend.position='bottom', 
-    legend.title=element_blank()
-  ) +
-  scale_y_continuous(labels = comma)  + 
-  labs(
-    x = NULL,
-    y = NULL,
-    title = 'basisOfRecord'
-  )
-
-coords_hist <- dat %>% 
-    mutate(coordinateUncertaintyInMeters = replace_na(coordinateUncertaintyInMeters, -5000)) %>% 
-ggplot(aes(x=coordinateUncertaintyInMeters)) +
-  geom_histogram() +
-  # coord_flip() +
-  theme_desc() +
-  scale_y_continuous(labels = comma)  +
-  labs(
-    x = NULL,
-    y = NULL,
-    title = 'coordinateUncertaintyInMeters'
   )
 
 ord_unc_class <- c("NA", "<1 km", "1-2 km", "2-3 km", ">3 km")
@@ -191,19 +227,6 @@ uncertainty_cnts <- dat %>%
       y = NULL,
       title = 'coordinateUncertainty'
     ))
-coords2 <- uncertainty_cnts %>% 
-  group_by(coordinateUncertainty, basisOfRecord) %>%
-  summarize(cnt = length(coordinateUncertainty)) %>% 
-  ggplot(aes(fill=basisOfRecord, x = coordinateUncertainty, y =cnt)) +
-  geom_bar(position='stack', stat='identity', show.legend = FALSE) +
-  # coord_flip() +
-  theme_desc() +
-  scale_y_continuous(labels = comma)  +
-  labs(
-    x = NULL,
-    y = NULL,
-    title = 'coordinateUncertainty'
-  )
 
 # Dates
 (edates <- ggplot(dat, aes(eventDate, ..count..)) + 
@@ -269,51 +292,83 @@ ggsave(file.path('figures', str_c('pol_', name, '_simple5.png')), width = 9.15, 
 mex <- raster::getData('GADM', country='MEX', level=1, 
                        path='data/input_data/context_Mexico') %>% 
   st_as_sf(crs=4326) 
-# Data tidying steps: drop coords with NAs, drop duplicates, flag/drop imprecise
-df <- dat %>% 
-  drop_na(decimalLongitude, decimalLatitude) %>% 
-  filter(decimalLongitude != 0 & decimalLatitude != 0,
-         coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters),
-         !str_detect(issues, 'COUNTRY_COORDINATE_MISMATCH')) %>% 
-  dplyr::select(species, genus, decimalLongitude, decimalLatitude, 
-                eventDate, coordinateUncertaintyInMeters, habitat, 
-                basisOfRecord, country, stateProvince, institutionCode) %>% 
-  distinct %>% 
-  st_as_sf(x = .,                         
-           coords = c("decimalLongitude", "decimalLatitude"),
-           crs = 4326)
 
 # Maps -----
 # df %>% mapview(zcol='coordinateUncertaintyInMeters', cex=4)
 
-gen_list <- species_cnt %>% slice(1:16) %>% select(genus) %>% deframe
+(tm <- tm_shape(mex) +
+    tm_borders(col='darkgray') + 
+    tm_shape(df) +
+   tm_dots(alpha=0.4, size=.1, col = 'nocturna', palette=c('#b10026', '#0c2c84'), legend.show=F) +
+    tm_facets(by = 'nocturna', free.coords=F))
+tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_nocturna.png')))
+
+sfam_list <- df %>% 
+  st_set_geometry(NULL) %>% 
+  group_by(superfamily) %>% 
+  summarise(cnt = length(superfamily)) %>% 
+  arrange(desc(cnt)) %>% 
+  slice(1:25) %>% 
+  select(superfamily) %>% 
+  deframe
+df_gen2 <- df %>% filter(superfamily %in% sfam_list)
+(tm <- tm_shape(mex) +
+    tm_borders(col='darkgray') + 
+    tm_shape(df_gen2) +
+    tm_dots(alpha=0.4, size=.1, col = 'nocturna', palette=c('#b10026', '#0c2c84'), legend.show=F) +#'Set1''#b10026') +
+    tm_facets(by = 'superfamily', free.coords=F))
+tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_superfamily_25.png')))
+
+fam_list <- df %>% 
+  st_set_geometry(NULL) %>% 
+  group_by(family) %>% 
+  summarise(cnt = length(family)) %>% 
+  arrange(desc(cnt)) %>% 
+  slice(1:25) %>% 
+  select(family) %>% 
+  deframe
+df_gen2 <- df %>% filter(family %in% fam_list)
+(tm <- tm_shape(mex) +
+    tm_borders(col='darkgray') + 
+    tm_shape(df_gen2) +
+    tm_dots(alpha=0.4, size=.1, col = 'nocturna', palette=c('#b10026', '#0c2c84'), legend.show=F) +
+    tm_facets(by = 'family', free.coords=F))
+tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_family_25.png')))
+
+gen_list <- df %>% 
+  st_set_geometry(NULL) %>% 
+  group_by(genus) %>% 
+  summarise(cnt = length(genus)) %>% 
+  arrange(desc(cnt)) %>% 
+  slice(1:25) %>% 
+  select(genus) %>% 
+  deframe
 df_gen2 <- df %>% filter(genus %in% gen_list)
 (tm <- tm_shape(mex) +
   tm_borders(col='darkgray') + 
   tm_shape(df_gen2) +
-  tm_dots(alpha=0.4, size=.1, col = '#b10026') +
+    tm_dots(alpha=0.4, size=.1, col = 'nocturna', palette=c('#b10026', '#0c2c84'), legend.show=F) +
+  # tm_dots(alpha=0.4, size=.1, col = '#b10026') +
   tm_facets(by = 'genus', free.coords=F))
-tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_genus_16.png')))
+tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_genus_25.png')))
 
 spec_list <- df %>% 
   st_set_geometry(NULL) %>% 
   group_by(species) %>% 
   summarise(cnt = length(species)) %>% 
   arrange(desc(cnt)) %>% 
-  slice(1:16) %>% 
+  slice(1:25) %>% 
   select(species) %>% 
   deframe
 df_spec1 <- df %>% filter(species %in% spec_list)
 (tm <- tm_shape(mex) +
     tm_borders(col='darkgray') + 
   tm_shape(df_spec1) +
-    tm_dots(alpha=0.4, size=.1, col = '#0c2c84') +
+    tm_dots(alpha=0.4, size=.1, col = 'nocturna', palette=c('#b10026', '#0c2c84'), legend.show=F) +
+    # tm_dots(alpha=0.4, size=.1, col = '#0c2c84') +
   tm_facets(by = 'species', free.coords=F))
-tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_species_16.png')))
+tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_species_25.png')))
 
-# Save -------------------------------------------------------------------------
-fp_out <- file.path('data/data_out/pollinator_points', str_c(name, '.geojson'))
-df %>% st_write(fp_out, delete_dsn=T)
 
 # Hotspot ----------------------------------------------------------------------
 mex <- raster::getData('GADM', country='MEX', level=0, 
@@ -517,9 +572,10 @@ mapview(df1) +
 
 
 # Table from PDF attempts ----
-# Convert Apendice 1 to a dataframe. It looks like this produces some errors. Better just to ask for 
+library(tabulizer)
 
-fname <- '/Users/emilysturdivant/GitHub/polinizadores/data_in/Apendice 1.pdf'
+# Convert Apendice 1 to a dataframe.
+fname <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/Apendice 1.pdf'
 
 # Extract and format part 1 as dataframe
 test <- extract_tables(fname, pages=seq(2,12), method='stream', output='data.frame')
@@ -616,40 +672,6 @@ df3 <- bind_rows(tbls)
 df3$Especie <- df3$Especie %>% 
   str_squish()
 
-# Combine
-repstrs <- c('ca cao', 'me xicana', 'Neobuxbaumi a', 'strept acantha', 'dive rsifolia', 'dig yna', 'olera cea')
-for (s in repstrs){
-  df1$Especie <- gsub(s, sub(' ', '', s), df1$Especie)
-  df2$Especie <- gsub(s, sub(' ', '', s), df2$Especie)
-  df3$Especie <- gsub(s, sub(' ', '', s), df3$Especie)
-}
-df <- df1 %>% 
-  full_join(df2) %>% 
-  full_join(df3)
-write_csv(df, path='~/GitHub/polinizadores/data_in/app1_cultivos.csv')
-
-library(magrittr)
-
-colnames(df)
-# df <- gsub(',', '', df)
-df[] <- lapply(df, gsub, pattern=',', replacement='')
-df %<>% type_convert(cols(Superficie.sembrada=col_integer(), 
-                          Superficie.cosechada=col_integer(),
-                          Volumen.de.produccion=col_integer(),
-                          Valor.de.produccion=col_integer(),
-                          Rendimiento=col_double(),
-                          Precio.medio.rural=col_double(),
-                          Valor.de.exportación=col_integer(),
-                          Valor.del.polinizador=col_integer(),
-                          Valor.de.producción.por.área=col_integer(),
-                          Tasa.de.cambio.por.cambio.climático=col_integer(),
-                          Superficie.cosechada.esperada.por.cambio.climático=col_integer()
-                          ))
-
-df %>% 
-  arrange(desc(Valor.del.polinizador)) %>% 
-  head()
-df[250, c("Valor.del.polinizador", 'Especie')]
 
 # 
 # # Extract and format part 4 as dataframe
@@ -719,3 +741,168 @@ df[250, c("Valor.del.polinizador", 'Especie')]
 #   tbls[[i]] <- t
 # }
 # df4 <- bind_rows(tbls)
+
+# Combine
+repstrs <- c('ca cao', 'me xicana', 'Neobuxbaumi a', 'strept acantha', 'dive rsifolia', 'dig yna', 'olera cea')
+for (s in repstrs){
+  df1$Especie <- gsub(s, sub(' ', '', s), df1$Especie)
+  df2$Especie <- gsub(s, sub(' ', '', s), df2$Especie)
+  df3$Especie <- gsub(s, sub(' ', '', s), df3$Especie)
+}
+df <- df1 %>% 
+  full_join(df2) %>% 
+  full_join(df3)
+write_csv(df, path='~/GitHub/polinizadores/data_in/app1_cultivos.csv')
+
+# Convert Apendice 2 to a dataframe. -------------------------------------------
+# Adrián converted PDF to Excel in Adobe, but pages 11 and 12 didn't work, 
+# so I saved them as text and ran the following.
+fname <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/pp11.txt'
+fname_out <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/pp11_a.csv'
+
+read_file(fname) %>% 
+  str_replace_all('\n ', '\n ,') %>% 
+  str_replace_all('[:blank:]{2,}', ';') %>% 
+  write_file(fname_out)
+
+fname <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/pp12.txt'
+fname_out <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/pp12_a.csv'
+
+read_file(fname) %>% 
+  str_replace_all('\n ', '\n ,') %>% 
+  str_replace_all('[:blank:]{2,}', ';') %>% 
+  write_file(fname_out)
+
+# Import CSV (sep=';')
+fname <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/Apendice2.csv'
+file.exists(fname)
+
+df <- read_delim(fname, delim=';', trim_ws=T) %>% 
+  fill(Familia, Cultivo)
+df %>% dplyr::select(Cultivo) %>% distinct %>% nrow
+
+
+
+
+
+
+
+# Work with Appendice 1 data ---------------------------------------------------
+fname <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/app1_cultivos.csv'
+df <- read_csv(fname, na=c('- -'), trim_ws=T) %>% 
+  mutate(across(all_of(names(df)), ~ str_replace_all(.x, ',', ''))) %>%
+  type_convert(cols(Superficie.sembrada=col_integer(), 
+                    Superficie.cosechada=col_integer(),
+                    Volumen.de.produccion=col_integer(),
+                    Valor.de.produccion=col_integer(),
+                    Rendimiento=col_double(),
+                    Precio.medio.rural=col_double(),
+                    Valor.de.exportación=col_integer(),
+                    Valor.del.polinizador=col_integer(),
+                    Valor.de.producción.por.área=col_integer(),
+                    Tasa.de.cambio.por.cambio.climático=col_integer(),
+                    Superficie.cosechada.esperada.por.cambio.climático=col_integer()
+  )) %>% 
+  mutate(Especie = str_replace_all(Especie, '[:space:]+', ' ') %>% 
+           str_replace_all(' \\(.*\\)', '') %>% 
+           str_trim, 
+         Nombre.común.en.español = 
+           stringi::stri_trans_general(Nombre.común.en.español, id='Latin-ASCII'))
+
+# Get crops that are dependent on pollinators
+dependents <- df %>% 
+  filter(str_detect(Importancia.de.la.polinización, '[D\\?]$'))
+
+# Sort crops by certain columns
+df %>% 
+  arrange(desc(Valor.del.polinizador)) %>% 
+  dplyr::select(Especie, Nombre.común.en.español, Tipo.de.manejo, Importancia.de.la.polinización, Valor.de.produccion, Valor.del.polinizador) %>% 
+  head(20)
+df %>% 
+  arrange(desc(Valor.de.produccion)) %>% 
+  dplyr::select(Especie, Nombre.común.en.español, Tipo.de.manejo, Importancia.de.la.polinización, Valor.de.produccion, Valor.del.polinizador) %>% 
+  head(20)
+df %>% 
+  arrange(desc(Valor.de.producción.por.área)) %>% 
+  dplyr::select(Especie, Nombre.común.en.español, Tipo.de.manejo, Importancia.de.la.polinización, Valor.de.produccion, Valor.del.polinizador) %>% 
+  head(20)
+df %>% 
+  arrange(desc(Precio.medio.rural)) %>% 
+  dplyr::select(Especie, Nombre.común.en.español, Tipo.de.manejo, Importancia.de.la.polinización, Valor.de.produccion, Valor.del.polinizador) %>% 
+  head(20)
+df[250, c("Valor.del.polinizador", 'Especie')]
+
+
+dependents %>% 
+  arrange(desc(Valor.de.produccion)) %>% 
+  dplyr::select(Especie, Nombre.común.en.español, Tipo.de.manejo, Importancia.de.la.polinización, Valor.de.produccion, Valor.del.polinizador) %>% 
+  head(20)
+dependents %>% 
+  arrange(desc(Valor.de.producción.por.área)) %>% 
+  dplyr::select(Especie, Nombre.común.en.español, Tipo.de.manejo, Importancia.de.la.polinización, Valor.de.produccion, Valor.del.polinizador) %>% 
+  head(20)
+dependents %>% 
+  arrange(desc(Precio.medio.rural)) %>% 
+  dplyr::select(Especie, Nombre.común.en.español, Tipo.de.manejo, Importancia.de.la.polinización, Valor.de.produccion, Valor.del.polinizador) %>% 
+  head(20)
+
+# Import Ashworth table from Martín -----
+fname <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/BaseCultivosAsworth_MXname.xlsx'
+df_ashworth <- readxl::read_xlsx(fname, trim_ws=T, .name_repair='universal', n_max=146) %>% 
+  mutate(Scientific.name = str_replace_all(Scientific.name, '[:space:]+', ' ') %>% 
+           str_replace_all('Lecythis sp\\.', 'Lecythis usitata') %>% 
+           str_replace_all('Rubus liebmanii','Rubus liebmannii') %>% 
+           str_replace_all('Macadamia integrifolia', 'Macadamia ternifolia') %>% 
+           str_replace_all('Citrus aurantifolia', 'Citrus x aurantifolia') %>% 
+           str_replace_all('Citrus limon', 'Citrus x limon') %>% 
+           str_replace_all('Citrus paradisii', 'Citrus paradisi') %>% 
+           str_replace_all('Capsicum frutescen', 'Capsicum frutescens') %>% 
+           str_replace_all('Nopalxochia phyllanthoides', 'Disocactus phyllanthoides')
+  )
+
+# Join
+only_app <- setdiff(df$Especie, df_ashworth$Scientific.name)
+only_ash <- setdiff(df_ashworth$Scientific.name, df$Especie)
+
+only_app_df <- df %>% 
+  filter(Especie %in% only_app) %>% 
+  select(Especie, Nombre.común.en.español) %>% 
+  mutate(Nombre.común.en.español = str_to_lower(Nombre.común.en.español))
+only_ash_df <- df_ashworth %>% 
+  filter(Scientific.name %in% only_ash) %>% 
+  select(Scientific.name, Common.name.Mex) %>% 
+  mutate(Common.name.Mex = str_to_lower(Common.name.Mex) %>% 
+           stringi::stri_trans_general(id='Latin-ASCII'))
+
+# Look for matches----
+i <- 6
+only_ash_df[[i,1]]
+(nm <- only_ash_df[[i,2]])
+(app_results <- only_app_df %>% filter(str_detect(Nombre.común.en.español, str_c('.*', nm, '.*'))))
+(app_results <- only_app_df %>% filter(str_detect(Nombre.común.en.español, str_c('.*', str_extract(nm, '\\w*'), '.*'))))
+
+(spec1 <- app_results[1,1])
+spec1 %>% gnr_resolve(best_match_only=T) %>% select(matched_name)
+(spec2 <- only_ash_df[i,1])
+spec2 %>% gnr_resolve(best_match_only=T) %>% select(matched_name)
+
+# Join ----
+df_join <- dependents %>% full_join(df_ashworth, by=c('Especie'='Scientific.name'))
+df_join %>% colnames
+
+df_join %>% 
+  filter(Level.of.pollinator.dependence=='E') %>% 
+  arrange(desc(Valor.del.polinizador)) %>% 
+  dplyr::select(Especie, Nombre.común.en.español, Tipo.de.manejo, Importancia.de.la.polinización, Valor.de.produccion, Valor.del.polinizador) %>% 
+  head(20)
+df_join %>% 
+  filter(Level.of.pollinator.dependence=='E') %>% 
+  arrange(desc(Valor.de.produccion)) %>% 
+  dplyr::select(Especie, Nombre.común.en.español, Tipo.de.manejo, Importancia.de.la.polinización, Valor.de.produccion, Valor.del.polinizador) %>% 
+  head(20)
+df_join %>% 
+  filter(Level.of.pollinator.dependence=='E') %>% 
+  arrange(desc(Valor.de.producción.por.área)) %>% 
+  dplyr::select(Especie, Nombre.común.en.español, Tipo.de.manejo, Importancia.de.la.polinización, Valor.de.produccion, Valor.del.polinizador) %>% 
+  head(20)
+
