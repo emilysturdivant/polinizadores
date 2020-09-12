@@ -1,14 +1,13 @@
 # Data are from GBIF
 # parameters: https://www.gbif.org/developer/occurrence#parameters
-# Require some sort of aggregation. You can see there are more data in more populated areas, which is probably not representative of pollinator hotspots.
-# There are comparatively few points for flies and we know that can't be representative.
 
+# Load libraries ---------------------------------------------------------------
 library(tabulizer)
 library(sf)
+library(rgdal)
 library(mapview)
 library(tools)
-library(rgdal)
-# library(spatstat)
+# library(rgdal)
 library(raster)
 library(tmap)
 library(leaflet)
@@ -17,17 +16,22 @@ library(scales)
 library(taxize)
 library(tidyverse)
 
+# Initialize -------------------------------------------------------------------
+fig_dir <- 'figures/pol_exploration_no_iNaturalist/date_gt2009'
+name <- 'Mariposas'
+fp_out <- file.path('data/data_out/pollinator_points', str_c(name, '.geojson'))
+df <- st_read(fp_out)
+
 # Pollinator database ----
 data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/Completos'
 fps <- list.files(data_dir, full.names = T)
-fp <- fps[[6]]
+fp <- fps[[4]]
 
 (name <- fp %>% 
-  basename %>% 
-  file_path_sans_ext %>% 
-  str_split('_') %>% 
-  last %>% 
-  last )
+  basename %>% file_path_sans_ext %>% 
+  str_split('_') %>% last %>% last)
+
+# Load data
 dat <- read_csv(fp)
 
 fam_list <- dat %>% 
@@ -47,13 +51,15 @@ if(name == 'Mariposas'){
 }
 
 dat %>% write_csv(file.path(data_dir, 'extras', str_c(name, '.csv')))
-# dat <- read_csv(file.path(data_dir, 'extras', str_c(name, '.csv')))
 
 # Data tidying steps: drop coords with NAs, drop duplicates, flag/drop imprecise
-vars <- c('species', 'genus', 'family', 'superfamily', 'order', 'nocturna', 
+vars <- c('species', 'genus', 'family', 'superfamily', 'order', 'class', 'nocturna', 
           'decimalLongitude', 'decimalLatitude', 
           'eventDate', 'coordinateUncertaintyInMeters', 'habitat', 
           'basisOfRecord', 'country', 'stateProvince', 'institutionCode')
+
+dat <- read_csv(file.path(data_dir, 'extras', str_c(name, '.csv')))
+
 df <- dat %>% 
   drop_na(decimalLongitude, decimalLatitude) %>% 
   filter(decimalLongitude != 0 & decimalLatitude != 0,
@@ -72,18 +78,13 @@ df %>% st_write(fp_out, delete_dsn=T)
 
 # Look around ------------------------------------------------------------------
 tot <- dat %>% nrow
-tot_badcoords <- dat %>% 
-  filter(is.na(decimalLongitude) | is.na(decimalLatitude) |
-                 decimalLongitude == 0 | decimalLatitude == 0) %>% 
-  nrow %>% 
-  format(big.mark=',', trim=T)
 dat <- dat %>% 
   drop_na(decimalLongitude, decimalLatitude) %>% 
   filter(decimalLongitude != 0 & decimalLatitude != 0,
-         !str_detect(issues, 'COUNTRY_COORDINATE_MISMATCH'))
-tot_goodcoords <- dat %>% 
-  nrow %>% 
-  format(big.mark=',', trim=T)
+         !str_detect(issues, 'COUNTRY_COORDINATE_MISMATCH'),
+         institutionCode != 'iNaturalist')
+tot_goodcoords <- dat %>% nrow 
+tot_badcoords <- tot - tot_goodcoords
 
 # Tables -----
 (species_cnt <- dat %>% 
@@ -102,7 +103,7 @@ tot_goodcoords <- dat %>%
     summarise(cnt = length(habitat)) %>% 
     arrange(desc(cnt)))
 tot_hab <- dat %>% select(habitat) %>% distinct %>% nrow
-habitat_cnt %>% write_csv(file.path('figures', str_c('pol_', name, '_habitats.csv')))
+# habitat_cnt %>% write_csv(file.path(fig_dir, str_c('pol_', name, '_habitats.csv')))
 
 # Number of records from each institution
 institutionCode_owners <- dat %>% 
@@ -119,7 +120,7 @@ institutionCode_owners <- dat %>%
     summarise(cnt = length(institutionCode)) %>% 
     left_join(institutionCode_owners) %>% 
     arrange(desc(cnt)))
-institution_cnt %>% write_csv(file.path('figures', str_c('pol_', name, '_institutions.csv')))
+# institution_cnt %>% write_csv(file.path(fig_dir, str_c('pol_', name, '_institutions.csv')))
 
 # Data exploration plots -------------------------------------------------------
 theme_desc <- function () { 
@@ -132,10 +133,8 @@ theme_desc <- function () {
 }
 
 # Species
-tot_species <- dat %>% select(species) %>% distinct %>% nrow %>% 
-  format(big.mark=',', trim=T)
-tot_genus <- dat %>% select(genus) %>% distinct %>% nrow %>% 
-  format(big.mark=',', trim=T)
+tot_species <- dat %>% select(species) %>% distinct %>% nrow
+tot_genus <- dat %>% select(genus) %>% distinct %>% nrow
 if (tot_species < 17){
   title <- 'Especies'
   # Species bar chart
@@ -156,29 +155,35 @@ if (tot_species < 17){
       slice(1:40) %>% 
       ggplot(aes(x=reorder(genus, cnt), y=cnt))
 }
-title <- 'Familias'
-# Family bar chart
-(species_cnt <- dat %>% 
-  group_by(family) %>% 
-  summarise(cnt = length(family)) %>% 
-  arrange(desc(cnt)))
-spec1 <- species_cnt %>% 
-  slice(1:40) %>% 
-  ggplot(aes(x=reorder(family, cnt), y=cnt))
-
-# superfamily bar chart
-title <- 'Super-Familias'
-tot_sfam <- dat %>% select(superfamily) %>% distinct %>% nrow %>% 
-  format(big.mark=',', trim=T)
-tot_fam <- dat %>% select(family) %>% distinct %>% nrow %>% 
-  format(big.mark=',', trim=T)
-(species_cnt <- dat %>% 
-    group_by(superfamily) %>% 
-    summarise(cnt = length(superfamily)) %>% 
+if(name=='Mariposas'){
+  title <- 'Familias'
+  tot_fam <- dat %>% select(family) %>% distinct %>% nrow
+  # Family bar chart
+  (species_cnt <- dat %>% 
+    group_by(family) %>% 
+    summarise(cnt = length(family)) %>% 
     arrange(desc(cnt)))
-spec1 <- species_cnt %>% 
-  slice(1:40) %>% 
-  ggplot(aes(x=reorder(superfamily, cnt), y=cnt))
+  spec1 <- species_cnt %>% 
+    slice(1:40) %>% 
+    ggplot(aes(x=reorder(family, cnt), y=cnt))
+  
+  # superfamily bar chart (Mariposas)
+  title <- 'Super-Familias'
+  tot_sfam <- dat %>% select(superfamily) %>% distinct %>% nrow
+  (species_cnt <- dat %>% 
+      group_by(superfamily) %>% 
+      summarise(cnt = length(superfamily)) %>% 
+      arrange(desc(cnt)))
+  spec1 <- species_cnt %>% 
+    slice(1:40) %>% 
+    ggplot(aes(x=reorder(superfamily, cnt), y=cnt))
+}
+
+subtitle <- str_c(
+  'Valores únicos de "family": ', tot_fam %>% format(big.mark=',', trim=T), 
+  '\nValores únicos de "genus": ', tot_genus %>% format(big.mark=',', trim=T), 
+  '\nValores únicos de "species": ', tot_species %>% format(big.mark=',', trim=T)
+  )
 (spec <- spec1 +
     geom_bar(stat='identity', show.legend = FALSE) +
     coord_flip() +
@@ -188,11 +193,7 @@ spec1 <- species_cnt %>%
       x = NULL,
       y = NULL,
       title = title,
-      subtitle = str_c('Valores únicos de "superfamily": ', tot_sfam,
-                       '\nValores únicos de "family": ', tot_fam, 
-                       '\nValores únicos de "genus": ', tot_genus, 
-                       '\nValores únicos de "species": ', tot_species
-                       )
+      subtitle = subtitle
     ))
 
 # basisOfRecord
@@ -262,215 +263,260 @@ tot_inst <- dat %>% select(institutionCode) %>% distinct %>% nrow
     )
 
 # Simple
+tot_goodcoords <- tot_goodcoords %>% format(big.mark=',', trim=T)
+tot_badcoords <- tot_badcoords %>% format(big.mark=',', trim=T)
 # (spec + coords1) / rec1
 # (spec | rec1) / (coords_hist | edates)
 # patchwork <- spec | (rec1 / coords1 / edates)
 patchwork <- spec | ((rec1 / coords1) / edates) | insts
 patchwork + plot_annotation(
   title = glue::glue('{name}: {tot_goodcoords} registros evaluados'),
-  subtitle = glue::glue('{tot_badcoords} registros eliminados por falta de coordenadas')
+  subtitle = glue::glue('{tot_badcoords} registros eliminados (coordenadas malas, iNaturalist)')
 )
-ggsave(file.path('figures', str_c('pol_', name, '_simple5.png')), width = 9.15, height=6.03)
+ggsave(file.path(fig_dir, str_c('pol_', name, '_simple5.png')), 
+       width = 9.15, height=6.03)
 
-# --------------------
-# dates
-(eventDate_cnt <- dat %>% 
-    group_by(eventDate) %>% 
-    summarise(cnt = length(eventDate)) %>% 
-    arrange(desc(cnt)))
-(eventDate_cnt <- dat %>% 
-    group_by(dateIdentified) %>% 
-    summarise(cnt = length(dateIdentified)) %>% 
-    arrange(desc(cnt)))
-(eventDate_cnt <- dat %>% 
-    group_by(eventDate, dateIdentified) %>% 
-    summarise(cnt = length(eventDate)) %>% 
-    arrange(desc(cnt)))
-# All points with eventDate are also missing dateIdentified
+# Filter to dates since 2010
+df <- df %>% 
+  filter(eventDate > 2009)
 
 # Convert table to simple features data frame ----------------------------------
 mex <- raster::getData('GADM', country='MEX', level=1, 
                        path='data/input_data/context_Mexico') %>% 
   st_as_sf(crs=4326) 
 
-# Maps -----
-# df %>% mapview(zcol='coordinateUncertaintyInMeters', cex=4)
+# Functions to create maps with tmap
+get_biggest_groups <- function(df, rank, facets){
 
-(tm <- tm_shape(mex) +
-    tm_borders(col='darkgray') + 
-    tm_shape(df) +
-   tm_dots(alpha=0.4, size=.1, col = 'nocturna', palette=c('#b10026', '#0c2c84'), legend.show=F) +
-    tm_facets(by = 'nocturna', free.coords=F))
-tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_nocturna.png')))
+  # Get list of most numerous groups at given taxonomic rank
+  grps_list <- df %>% 
+    st_set_geometry(NULL) %>% 
+    group_by(.data[[rank]]) %>% 
+    summarise(cnt = length(.data[[rank]])) %>% 
+    arrange(desc(cnt)) %>% 
+    slice(1:facets) %>% 
+    select(.data[[rank]]) %>% 
+    deframe
+  
+  # Filter df to the list
+  df %>% filter(.data[[rank]] %in% grps_list)
+}
 
-sfam_list <- df %>% 
-  st_set_geometry(NULL) %>% 
-  group_by(superfamily) %>% 
-  summarise(cnt = length(superfamily)) %>% 
-  arrange(desc(cnt)) %>% 
-  slice(1:25) %>% 
-  select(superfamily) %>% 
-  deframe
-df_gen2 <- df %>% filter(superfamily %in% sfam_list)
-(tm <- tm_shape(mex) +
-    tm_borders(col='darkgray') + 
-    tm_shape(df_gen2) +
-    tm_dots(alpha=0.4, size=.1, col = 'nocturna', palette=c('#b10026', '#0c2c84'), legend.show=F) +#'Set1''#b10026') +
-    tm_facets(by = 'superfamily', free.coords=F))
-tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_superfamily_25.png')))
+map_pts_taxon_facets <- function(df, rank, name, facets, fig_dir){
+  # Subset to top taxa
+  df_sub <- df %>% get_biggest_groups(rank, facets)
+  
+  if('nocturna' %in% colnames(df_sub)){
+    # Map
+    tm <- tm_shape(mex) +
+      tm_borders(col='darkgray') + 
+      tm_shape(df_sub) +
+      tm_dots(alpha=0.4, size=.1,
+              col = 'nocturna', palette=c('#b10026', '#0c2c84'),
+              legend.show=F) +
+      tm_facets(by = rank, free.coords=F)
+  } else {
+    # Map
+    tm <- tm_shape(mex) +
+      tm_borders(col='darkgray') + 
+      tm_shape(df_sub) +
+      tm_dots(alpha=0.4, size=.1, col = '#b10026') +
+      tm_facets(by = rank, free.coords=F)
+  }
 
-fam_list <- df %>% 
-  st_set_geometry(NULL) %>% 
-  group_by(family) %>% 
-  summarise(cnt = length(family)) %>% 
-  arrange(desc(cnt)) %>% 
-  slice(1:25) %>% 
-  select(family) %>% 
-  deframe
-df_gen2 <- df %>% filter(family %in% fam_list)
-(tm <- tm_shape(mex) +
-    tm_borders(col='darkgray') + 
-    tm_shape(df_gen2) +
-    tm_dots(alpha=0.4, size=.1, col = 'nocturna', palette=c('#b10026', '#0c2c84'), legend.show=F) +
-    tm_facets(by = 'family', free.coords=F))
-tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_family_25.png')))
+  # Save
+  fp_out <- file.path(fig_dir, 
+                      str_c('pol_', name, '_map_', rank, '_', facets, '.png'))
+  tmap_save(tm, filename = fp_out)
+}
 
-gen_list <- df %>% 
-  st_set_geometry(NULL) %>% 
-  group_by(genus) %>% 
-  summarise(cnt = length(genus)) %>% 
-  arrange(desc(cnt)) %>% 
-  slice(1:25) %>% 
-  select(genus) %>% 
-  deframe
-df_gen2 <- df %>% filter(genus %in% gen_list)
-(tm <- tm_shape(mex) +
-  tm_borders(col='darkgray') + 
-  tm_shape(df_gen2) +
-    tm_dots(alpha=0.4, size=.1, col = 'nocturna', palette=c('#b10026', '#0c2c84'), legend.show=F) +
-  # tm_dots(alpha=0.4, size=.1, col = '#b10026') +
-  tm_facets(by = 'genus', free.coords=F))
-tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_genus_25.png')))
+# Map points by taxonomy -----
+map_pts_taxon_facets(df, rank='family', name=name, facets=12, fig_dir=fig_dir)
+map_pts_taxon_facets(df, rank='genus', name=name, facets=16, fig_dir=fig_dir)
+map_pts_taxon_facets(df, rank='species', name=name, facets=25, fig_dir=fig_dir)
 
-spec_list <- df %>% 
-  st_set_geometry(NULL) %>% 
-  group_by(species) %>% 
-  summarise(cnt = length(species)) %>% 
-  arrange(desc(cnt)) %>% 
-  slice(1:25) %>% 
-  select(species) %>% 
-  deframe
-df_spec1 <- df %>% filter(species %in% spec_list)
-(tm <- tm_shape(mex) +
-    tm_borders(col='darkgray') + 
-  tm_shape(df_spec1) +
-    tm_dots(alpha=0.4, size=.1, col = 'nocturna', palette=c('#b10026', '#0c2c84'), legend.show=F) +
-    # tm_dots(alpha=0.4, size=.1, col = '#0c2c84') +
-  tm_facets(by = 'species', free.coords=F))
-tmap_save(tm, filename = file.path('figures', str_c('pol_', name, '_map_species_25.png')))
+# Mariposas
+try(map_pts_taxon_facets(df, rank='superfamily', name=name, facets=12, fig_dir=fig_dir))
+try(map_pts_taxon_facets(df, rank='nocturna', name=name, facets=2, fig_dir=fig_dir))
 
 
-# Hotspot ----------------------------------------------------------------------
+
+# ggplot for mapping --------
+# Work from https://www.robert-hickman.eu/post/getis-ord-heatmaps-tutorial/
+library(spdep)
+
+# Gi* statistics ----
+map_Gi <- function(df, hex_polys, k=6){
+  # Get number of points within each hexagon
+  hex_polys$pt_no <- st_intersects(hex_polys, df) %>% lengths
+  
+  # Plot observations per bin (without accounting for neighbors)
+  # (p2 <- ggplot(hex_polys) +
+  #   geom_sf(aes(fill = pt_no)) +
+  #   scale_fill_viridis_c(option = "magma", "# Polinizadores") +
+  #   theme_void() +
+  #   ggtitle("Binned Pollinators"))
+  
+  # Convert hexagon centroids to a matrix of points
+  hex_pts <- do.call(rbind, st_geometry(st_centroid(hex_polys))) %>%
+    unlist %>% as.matrix.data.frame
+  
+  # Use KNN algorithm to find neighboring shapes. Increase K for more smoothing.
+  neighbor_hexes <- hex_pts %>% 
+    knearneigh(k = k) %>% 
+    knn2nb(row.names = rownames(hex_pts)) %>%
+    include.self
+  
+  # Calculate the local G for point count in each hex using the neighbors
+  localGvals <- localG(x = as.numeric(hex_polys$pt_no),
+                       listw = nb2listw(neighbor_hexes, style = "B"),
+                       zero.policy = TRUE)
+  
+  # Bind this back to the sf as a numeric variable column
+  hex_polys$smooth_pt_no <- as.numeric(localGvals)
+  
+  # Plot the statistic, Gi* (z-value so greater than abs(1.68) is statistically significant)
+  p3 <- ggplot(hex_polys) +
+      geom_sf(aes(fill = smooth_pt_no), lwd=.1) +
+      scale_fill_viridis_c(option = "magma", name = "Gi* Statistic") +
+      theme_void()
+}
+
+map_Gi_facets <- function(df, rank, facets, hex_polys, k=6){
+  # Convert hexagon centroids to a matrix of points
+  hex_pts <- do.call(rbind, st_geometry(st_centroid(hex_polys))) %>%
+    unlist %>% as.matrix.data.frame
+  
+  # Use KNN algorithm to find neighboring shapes. Increase K for more smoothing.
+  neighbor_hexes <- hex_pts %>% 
+    knearneigh(k = k) %>% 
+    knn2nb(row.names = rownames(hex_pts)) %>%
+    include.self
+  
+  # Get list of most numerous groups at given taxonomic rank
+  grps_list <- df %>% 
+    st_set_geometry(NULL) %>% 
+    group_by(.data[[rank]]) %>% 
+    summarise(cnt = length(.data[[rank]])) %>% 
+    arrange(desc(cnt)) %>% 
+    slice(1:facets) %>% 
+    select(.data[[rank]]) %>% 
+    deframe
+  
+  for(i in seq(length(grps_list))){
+    taxon <- grps_list[[i]]
+    
+    df1 <- df %>% 
+      filter(.data[[rank]] == taxon)
+    
+    tot_taxon <- df1 %>% nrow %>% format(big.mark=',', trim=T)
+    
+    # Get number of points within each hexagon
+    hex_polys$pt_no <- st_intersects(hex_polys, df1) %>% lengths
+
+    # Calculate the local G for point count in each hex using the neighbors
+    localGvals <- localG(x = as.numeric(hex_polys$pt_no),
+                         listw = nb2listw(neighbor_hexes, style = "B"),
+                         zero.policy = TRUE)
+    
+    # Bind this back to the sf as a numeric variable column
+    hex_polys[taxon] <- as.numeric(localGvals)
+  }
+
+  hex_polys_long <- hex_polys %>% 
+    pivot_longer(cols=any_of(grps_list), names_to=rank, values_to='g_stat') %>% 
+    st_as_sf
+  
+  # Plot the statistic, Gi* (z-value so greater than abs(1.68) is statistically significant)
+  (p3 <- ggplot(hex_polys_long) +
+      geom_sf(aes(fill = g_stat), lwd=.1) +
+      scale_fill_viridis_c(option = "magma", name = "Gi* Statistic") +
+      facet_wrap(~ .data[[rank]]) +
+      theme_void())
+}
+
+# Mexico 
 mex <- raster::getData('GADM', country='MEX', level=0, 
-               path='data/input_data/context_Mexico') %>%
-  spTransform(CRSobj=CRS('+proj=utm +zone=13 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs '))
+                       path='data/input_data/context_Mexico') %>% 
+  st_as_sf(crs=4326) %>% 
+  st_simplify(dTolerance = 0.02)
 
-# Using spatstat https://maczokni.github.io/crimemapping_textbook_bookdown/studying-spatial-point-patterns.html#inspecting-our-data-with-spatstat ----
-fp_out <- file.path('data/data_out/pollinator_points', str_c(name, '.geojson'))
-df <- st_read(fp_out)
-mex <- raster::getData('GADM', country='MEX', level=0, 
-               path='data/input_data/context_Mexico') %>% 
+# Municipios
+mex_munis <- raster::getData('GADM', country='MEX', level=2, 
+                             path='data/input_data/context_Mexico') %>% 
   st_as_sf(crs=4326) 
-pts <- df #%>% st_crop(st_bbox(mex))
-tm_shape(mex) + 
-  tm_fill() +
-  tm_shape(pts) +
-  tm_dots(alpha=0.4, size=1)
 
-# start using spatstat
-mex_sp <- as(mex, 'Spatial') %>% 
-  spTransform(CRSobj=CRS('+proj=utm +zone=13 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs '))
-window <- maptools::as.owin.SpatialPolygons(mex_sp)
+# Generate hexagons within Mexico
+hex_polys <- mex %>% as_Spatial %>% 
+  spsample(n=1500, type = "hexagonal") %>% # Distribute points hexagonally
+  HexPoints2SpatialPolygons %>%            # Create hexagons
+  st_as_sf(crs = st_crs(mex)) %>%
+  st_intersection(., mex)                  # clip to the Mexico boundary
 
-# extract coordinates into a matrix
-pts <- pts %>% 
-  st_transform('+proj=utm +zone=13 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs ')
-pts_coords <- matrix(unlist(pts$geometry), ncol = 2, byrow = T)
+# Filter points
+df <- df %>% 
+  filter(eventDate > 2009)
 
-pts_ppp <- ppp(x = pts_coords[,1], y = pts_coords[,2],
-               window = window, check = T)
-jitter_pts <- rjitter(pts_ppp, retry=T, nsim=1, drop=T)
+plt_all <- df %>% map_Gi(hex_polys, k=6)
 
-# Count quadrants
-# Q <- quadratcount(jitter_pts, nx = 4, ny = 3)
-# plot(jitter_pts)
-# plot(Q, add = TRUE, cex = 2)
+rank <- 'family'
+facets <- 6
+plt_genera <- map_Gi_facets(df, rank, facets, hex_polys, k=6)
 
-# Run a Chi Square test to check whether there's a statistically significant pattern
-# quadrat.test(jitter_pts, nx = 3, ny = 2)
+layout <- c(
+  area(t = 1, l = 1, b = 3, r = 2.5),
+  area(t = 4, l = 1, b = 8, r = 4.5)
+)
+plt_all + plt_genera +
+  plot_layout(design = layout) + 
+  plot_annotation(
+    title = glue::glue('{name}')
+  )
 
-# Generate the density raster
-dmap1 <- density.ppp(jitter_pts, sigma = bw.ppl(jitter_pts), edge=T)
-r1 <- raster(dmap1)
-r1[r1 < 0.00000001 ] <- NA
-crs(r1) <- sp::CRS('+proj=utm +zone=13 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs ')
-pal <- colorNumeric(c("#0C2C84", "#41B6C4", "#FFFFCC"), values(r1),
-                    na.color = "transparent")
-leaflet() %>% 
-  # setView(lng = -2.225814, lat = 53.441315, zoom = 14) %>% 
-  addTiles() %>%
-  addRasterImage(r1, colors = pal, opacity = 0.8) %>%
-  addLegend(pal = pal, values = values(r1),
-            title = "Bat map")
+fp_out <- file.path(fig_dir, str_glue('Gi_stat_{name}_{rank}_{facets}.png'))
+ggsave(fp_out, width = 11, height=8)
 
-dmap2 <- density.ppp(jitter_pts, sigma = bw.diggle(jitter_pts), edge=T)
-r2 <- raster(dmap1)
-r2[r2 < 0.00000001 ] <- NA
-crs(r2) <- sp::CRS('+proj=utm +zone=13 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs ')
-pal <- colorNumeric(c("#0C2C84", "#41B6C4", "#FFFFCC"), values(r2),
-                    na.color = "transparent")
-leaflet() %>% 
-  # setView(lng = -2.225814, lat = 53.441315, zoom = 14) %>% 
-  addTiles() %>%
-  addRasterImage(r2, colors = pal, opacity = 0.8) %>%
-  addLegend(pal = pal, values = values(r2),
-            title = "Mariposas")
+# superfamily bar chart (Mariposas)
+title <- 'Super-Familias'
+tot_sfam <- dat %>% select(superfamily) %>% distinct %>% nrow
+(species_cnt <- dat %>% 
+    group_by(superfamily) %>% 
+    summarise(cnt = length(superfamily)) %>% 
+    arrange(desc(cnt)))
+spec1 <- species_cnt %>% 
+  slice(1:10) %>% 
+  ggplot(aes(x=reorder(superfamily, cnt), y=cnt))
 
-fp_out <- file.path('data/data_out/r_data', str_c('density_', name, '.rdata'))
-save(dmap1, dmap2, jitter_pts, file=fp_out)
+subtitle <- str_c(
+  'Valores únicos de "superfamily": ', tot_sfam %>% format(big.mark=',', trim=T)
+)
+(spec <- spec1 +
+    geom_bar(stat='identity', show.legend = FALSE) +
+    coord_flip() +
+    theme_desc() +
+    scale_y_continuous(labels = comma)  +
+    labs(
+      x = NULL,
+      y = NULL,
+      subtitle = subtitle
+    ))
+layout <- c(
+  area(t = 1, l = 1, b = 3, r = 2.5),
+  area(t = 1, l = 4, b = 3, r = 4.5),
+  area(t = 4, l = 1, b = 8, r = 4.5)
+)
+plt_all + spec + plt_genera +
+  plot_layout(design = layout) + 
+  plot_annotation(
+    title = glue::glue('{name}')
+  )
+
+fp_out <- file.path(fig_dir, str_glue('Gi_stat_{name}_{rank}_{facets}.png'))
+ggsave(fp_out, width = 11, height=8)
 
 
 
-# Using adehabitatHR and guide by James Cheshire https://spatial.ly/2017/12/pointpatterns/ ----
-crop_dir <- file.path('data', 'input_data', 'environment_variables', 'cropped')
-ext <- mex %>%
-  extent
-resolution <- 500
 
-# Create empty grid
-x <- seq(ext[1],ext[2],by=resolution)  # where resolution is the pixel size you desire
-y <- seq(ext[3],ext[4],by=resolution)
-xy <- expand.grid(x=x,y=y)
-coordinates(xy) <- ~x+y
-gridded(xy) <- TRUE
-plot(xy)
-plot(mex, border="red", add=T)
-
-# Create regular sample (not necessary)
-xy <- st_sample(st_as_sfc(st_bbox(ext)), size=7000, type="regular")
-plot(xy)
-plot(mex, add=T)
-
-# Run density estimation
-pts_sp <- df %>% 
-  # st_transform(crs=6368) %>% 
-  as('Spatial') %>%
-  spTransform(CRSobj=CRS('+proj=utm +zone=13 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs '))
-all <- raster(kernelUD(pts_sp, h="href", grid = xy)) 
-#First results
-plot(all)
-plot(pts_sp)
-plot(mex, border="red", add=T)
 
 
 # Quality checking ----
@@ -773,7 +819,9 @@ read_file(fname) %>%
   str_replace_all('[:blank:]{2,}', ';') %>% 
   write_file(fname_out)
 
-# Import CSV (sep=';')
+# Manual steps to get all apendice2 data into file Apendice2.csv
+
+# Import Apendice2 data
 fname <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/Apendice2.csv'
 file.exists(fname)
 

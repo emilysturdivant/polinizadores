@@ -16,8 +16,9 @@ out_dir <- 'data/data_out/polys_ag_INEGI_noFMG'
 fmg_dir <- 'data/data_out/polys_fmg'
 
 # Load SIAP Cultivos - area sembrada -------------------------------------------
+year <- '2019'
 url_cult_stats <- str_c('http://infosiap.siap.gob.mx/gobmx/datosAbiertos/',
-                     'ProduccionAgricola/Cierre_agricola_mun_2019.csv')
+                     'ProduccionAgricola/Cierre_agricola_mun_', year, '.csv')
 cultivos <- read_csv(url_cult_stats, col_types = 'iicicicicicicicicnnnnnnn', 
                      locale=locale(encoding='latin1')) %>% 
   rename(CVE_ENT=Idestado, CVE_MUN=Idmunicipio)
@@ -28,6 +29,7 @@ area_cult_peren <- cultivos %>%
   get_area_planted(CVE_ENT, CVE_MUN, Nomcultivo, Idmodalidad, Sembrada, total_sembrada) %>% 
   mutate(Idmodalidad=recode(Idmodalidad, '1' = "R", '2' = "T"))
 
+area_cult_peren %>% colnames
 # filter to spring 
 area_cult_prim <- cultivos %>% 
   filter(Idciclo==2) %>% 
@@ -56,6 +58,9 @@ area_cult_otoperen <- cultivos %>%
 save(area_cult_peren, area_cult_prim, area_cult_otono, area_cult_primperen, 
      area_cult_otoperen, cultivos,
      file = "data/data_out/r_data/area_sembrada_by_season_2019.RData")
+
+area_cult_primperen %>% saveRDS("data/data_out/r_data/area_sembrada_primperen_2019.RDS")
+area_cult_otoperen %>% saveRDS("data/data_out/r_data/area_sembrada_otoperen_2019.RDS")
 
 # Municipio polygons -----------------------------------------------------------
 fp_munis <- 'data/input_data/context_Mexico/SNIB_divisionpolitica/muni_2018gw/muni_2018gw.shp'

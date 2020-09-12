@@ -145,6 +145,8 @@ load_and_preprocess_fmg <- function(estado_code, data_dir, return_df, municipios
   if(return_df) return(sup_frij_gran) else return(TRUE)
 }
 
+
+
 get_area_planted <- function(data, state_id_fld, muni_id_fld, crop_name_fld, 
                              riego_id_fld, planted_fld, planted_area_fld){
   # Summarize crops by municipio, percent of total planted area
