@@ -281,9 +281,10 @@ df <- df %>%
   filter(eventDate > 2009)
 
 # Convert table to simple features data frame ----------------------------------
-mex <- raster::getData('GADM', country='MEX', level=1, 
+mex <- raster::getData('GADM', country='MEX', level=0, 
                        path='data/input_data/context_Mexico') %>% 
   st_as_sf(crs=4326) 
+anps <- st_read('data/input_data/context_Mexico/SHAPE_ANPS/182ANP_Geo_ITRF08_Julio04_2019.shp')
 
 # Functions to create maps with tmap
 get_biggest_groups <- function(df, rank, facets){
@@ -328,12 +329,18 @@ map_pts_taxon_facets <- function(df, rank, name, facets, fig_dir){
   fp_out <- file.path(fig_dir, 
                       str_c('pol_', name, '_map_', rank, '_', facets, '.png'))
   tmap_save(tm, filename = fp_out)
+  
+  # Return
+  return(tm)
 }
 
 # Map points by taxonomy -----
-map_pts_taxon_facets(df, rank='family', name=name, facets=12, fig_dir=fig_dir)
-map_pts_taxon_facets(df, rank='genus', name=name, facets=16, fig_dir=fig_dir)
-map_pts_taxon_facets(df, rank='species', name=name, facets=25, fig_dir=fig_dir)
+tm_fam <- map_pts_taxon_facets(df, rank='family', name=name, facets=12, fig_dir=fig_dir)
+tm_gen <- map_pts_taxon_facets(df, rank='genus', name=name, facets=16, fig_dir=fig_dir)
+tm_spec <- map_pts_taxon_facets(df, rank='species', name=name, facets=25, fig_dir=fig_dir)
+
+tm_fam + tm_shape(anps) +
+  tm_borders(col='green')
 
 # Mariposas
 try(map_pts_taxon_facets(df, rank='superfamily', name=name, facets=12, fig_dir=fig_dir))
@@ -341,178 +348,6 @@ try(map_pts_taxon_facets(df, rank='nocturna', name=name, facets=2, fig_dir=fig_d
 
 
 
-# ggplot for mapping --------
-# Work from https://www.robert-hickman.eu/post/getis-ord-heatmaps-tutorial/
-library(spdep)
-
-# Gi* statistics ----
-map_Gi <- function(df, hex_polys, k=6){
-  # Get number of points within each hexagon
-  hex_polys$pt_no <- st_intersects(hex_polys, df) %>% lengths
-  
-  # Plot observations per bin (without accounting for neighbors)
-  # (p2 <- ggplot(hex_polys) +
-  #   geom_sf(aes(fill = pt_no)) +
-  #   scale_fill_viridis_c(option = "magma", "# Polinizadores") +
-  #   theme_void() +
-  #   ggtitle("Binned Pollinators"))
-  
-  # Convert hexagon centroids to a matrix of points
-  hex_pts <- do.call(rbind, st_geometry(st_centroid(hex_polys))) %>%
-    unlist %>% as.matrix.data.frame
-  
-  # Use KNN algorithm to find neighboring shapes. Increase K for more smoothing.
-  neighbor_hexes <- hex_pts %>% 
-    knearneigh(k = k) %>% 
-    knn2nb(row.names = rownames(hex_pts)) %>%
-    include.self
-  
-  # Calculate the local G for point count in each hex using the neighbors
-  localGvals <- localG(x = as.numeric(hex_polys$pt_no),
-                       listw = nb2listw(neighbor_hexes, style = "B"),
-                       zero.policy = TRUE)
-  
-  # Bind this back to the sf as a numeric variable column
-  hex_polys$smooth_pt_no <- as.numeric(localGvals)
-  
-  # Plot the statistic, Gi* (z-value so greater than abs(1.68) is statistically significant)
-  p3 <- ggplot(hex_polys) +
-      geom_sf(aes(fill = smooth_pt_no), lwd=.1) +
-      scale_fill_viridis_c(option = "magma", name = "Gi* Statistic") +
-      theme_void()
-}
-
-map_Gi_facets <- function(df, rank, facets, hex_polys, k=6){
-  # Convert hexagon centroids to a matrix of points
-  hex_pts <- do.call(rbind, st_geometry(st_centroid(hex_polys))) %>%
-    unlist %>% as.matrix.data.frame
-  
-  # Use KNN algorithm to find neighboring shapes. Increase K for more smoothing.
-  neighbor_hexes <- hex_pts %>% 
-    knearneigh(k = k) %>% 
-    knn2nb(row.names = rownames(hex_pts)) %>%
-    include.self
-  
-  # Get list of most numerous groups at given taxonomic rank
-  grps_list <- df %>% 
-    st_set_geometry(NULL) %>% 
-    group_by(.data[[rank]]) %>% 
-    summarise(cnt = length(.data[[rank]])) %>% 
-    arrange(desc(cnt)) %>% 
-    slice(1:facets) %>% 
-    select(.data[[rank]]) %>% 
-    deframe
-  
-  for(i in seq(length(grps_list))){
-    taxon <- grps_list[[i]]
-    
-    df1 <- df %>% 
-      filter(.data[[rank]] == taxon)
-    
-    tot_taxon <- df1 %>% nrow %>% format(big.mark=',', trim=T)
-    
-    # Get number of points within each hexagon
-    hex_polys$pt_no <- st_intersects(hex_polys, df1) %>% lengths
-
-    # Calculate the local G for point count in each hex using the neighbors
-    localGvals <- localG(x = as.numeric(hex_polys$pt_no),
-                         listw = nb2listw(neighbor_hexes, style = "B"),
-                         zero.policy = TRUE)
-    
-    # Bind this back to the sf as a numeric variable column
-    hex_polys[taxon] <- as.numeric(localGvals)
-  }
-
-  hex_polys_long <- hex_polys %>% 
-    pivot_longer(cols=any_of(grps_list), names_to=rank, values_to='g_stat') %>% 
-    st_as_sf
-  
-  # Plot the statistic, Gi* (z-value so greater than abs(1.68) is statistically significant)
-  (p3 <- ggplot(hex_polys_long) +
-      geom_sf(aes(fill = g_stat), lwd=.1) +
-      scale_fill_viridis_c(option = "magma", name = "Gi* Statistic") +
-      facet_wrap(~ .data[[rank]]) +
-      theme_void())
-}
-
-# Mexico 
-mex <- raster::getData('GADM', country='MEX', level=0, 
-                       path='data/input_data/context_Mexico') %>% 
-  st_as_sf(crs=4326) %>% 
-  st_simplify(dTolerance = 0.02)
-
-# Municipios
-mex_munis <- raster::getData('GADM', country='MEX', level=2, 
-                             path='data/input_data/context_Mexico') %>% 
-  st_as_sf(crs=4326) 
-
-# Generate hexagons within Mexico
-hex_polys <- mex %>% as_Spatial %>% 
-  spsample(n=1500, type = "hexagonal") %>% # Distribute points hexagonally
-  HexPoints2SpatialPolygons %>%            # Create hexagons
-  st_as_sf(crs = st_crs(mex)) %>%
-  st_intersection(., mex)                  # clip to the Mexico boundary
-
-# Filter points
-df <- df %>% 
-  filter(eventDate > 2009)
-
-plt_all <- df %>% map_Gi(hex_polys, k=6)
-
-rank <- 'family'
-facets <- 6
-plt_genera <- map_Gi_facets(df, rank, facets, hex_polys, k=6)
-
-layout <- c(
-  area(t = 1, l = 1, b = 3, r = 2.5),
-  area(t = 4, l = 1, b = 8, r = 4.5)
-)
-plt_all + plt_genera +
-  plot_layout(design = layout) + 
-  plot_annotation(
-    title = glue::glue('{name}')
-  )
-
-fp_out <- file.path(fig_dir, str_glue('Gi_stat_{name}_{rank}_{facets}.png'))
-ggsave(fp_out, width = 11, height=8)
-
-# superfamily bar chart (Mariposas)
-title <- 'Super-Familias'
-tot_sfam <- dat %>% select(superfamily) %>% distinct %>% nrow
-(species_cnt <- dat %>% 
-    group_by(superfamily) %>% 
-    summarise(cnt = length(superfamily)) %>% 
-    arrange(desc(cnt)))
-spec1 <- species_cnt %>% 
-  slice(1:10) %>% 
-  ggplot(aes(x=reorder(superfamily, cnt), y=cnt))
-
-subtitle <- str_c(
-  'Valores únicos de "superfamily": ', tot_sfam %>% format(big.mark=',', trim=T)
-)
-(spec <- spec1 +
-    geom_bar(stat='identity', show.legend = FALSE) +
-    coord_flip() +
-    theme_desc() +
-    scale_y_continuous(labels = comma)  +
-    labs(
-      x = NULL,
-      y = NULL,
-      subtitle = subtitle
-    ))
-layout <- c(
-  area(t = 1, l = 1, b = 3, r = 2.5),
-  area(t = 1, l = 4, b = 3, r = 4.5),
-  area(t = 4, l = 1, b = 8, r = 4.5)
-)
-plt_all + spec + plt_genera +
-  plot_layout(design = layout) + 
-  plot_annotation(
-    title = glue::glue('{name}')
-  )
-
-fp_out <- file.path(fig_dir, str_glue('Gi_stat_{name}_{rank}_{facets}.png'))
-ggsave(fp_out, width = 11, height=8)
 
 
 

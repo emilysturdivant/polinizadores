@@ -2,10 +2,14 @@
 .Rhistory
 .RData
 .Ruserdata
-doc.kml
-889463598459_s.zip
+*.kml
+*.kmz
+*.zip
+*.ffs_gui
 References/
 0042687-200613084148143.zip
 gadm36_MEX_0_sp.rds
 sync.ffs_lock
 data/
+!data/helpers/
+figures/
