@@ -48,6 +48,65 @@ mex <- raster::getData('GADM', country='MEX', level=0,
 # alt <- raster::getData(
 #   'alt', country='MEX', path='data/input_data/context_Mexico')
 
+library(vegan)
+# Convert date range
+date_min <- as.POSIXct(str_c(date_range[[1]], "-01-01"))
+date_max <- as.POSIXct(str_c(date_range[[2]], "-12-31"))
+name <- 'Abejas'
+
+# Load pollinator file
+pol_fp <- file.path('data/data_out/pollinator_points', str_c(name, '.geojson'))
+df <- st_read(pol_fp) %>% 
+  # Filter to date range
+  filter(eventDate >= date_min & eventDate <= date_max) 
+
+# Format data for vegan
+
+# Get count of each species per site
+polys_id_fld <- 'ID_ANP'
+anps_dummy <- tibble(ID_ANP = seq(1,10) %>% as.character, 
+                     area_ha = sample.int(56, 10, replace=T))
+df[[polys_id_fld]] <- sample.int(10, nrow(df), replace=T) %>% 
+  as.character
+df <- left_join(df, anps_dummy)
+
+
+spec_df <- df %>% 
+  st_drop_geometry %>% 
+  group_by(.data[[polys_id_fld]], area_ha, species) %>% 
+  summarize(n = length(species)) %>% 
+  ungroup %>% 
+  pivot_wider(id_cols = all_of(c(polys_id_fld, 'area_ha')), names_from = species, values_from = n) %>%
+  replace(is.na(.), 0)
+
+# Calculate simple richness and two indices
+spec_df %>% 
+  rowwise() %>%
+  mutate(
+    n = sum(c_across(where(is.numeric)) > 0, na.rm=T), # simple richness
+    N = sum(c_across(where(is.numeric)), na.rm=T), # simple abundance
+    D_menhinick = n/sqrt(N), # Menhinick's index
+    D_margalef = (n-1)/log(N) # Margalef's index
+  ) %>% 
+  # ungroup %>% 
+  select(ID_ANP, n, N, D_menhinick, D_margalef)
+
+# density
+spec_df %>% 
+  select(ID_ANP:'Anthidiellum apicale') %>% 
+  mutate(across(matches('.* .*'), ~ .x/area_ha)) %>% 
+  rowwise() %>%
+  mutate(
+    # n = sum(c_across(where(is.numeric)) > 0, na.rm=T), # simple richness
+    N = sum(c_across(matches('.* .*')), na.rm=T), # simple abundance
+    # D_menhinick = n/sqrt(N), # Menhinick's index
+    # D_margalef = (n-1)/log(N) # Margalef's index
+  )
+
+# rarefaction
+
+
+
 # Functions --------------------------------------------------------------------
 count_pollinators_in_polys <- function(
   pts_sfc, polys_sfc, polys_id_fld='ID_ANP', polys_area_fld='area_ha'
@@ -62,7 +121,11 @@ count_pollinators_in_polys <- function(
     group_by(.data[[polys_id_fld]], .data[[polys_area_fld]]) %>% 
     # Get diversity and abundance of species
     summarize(no_spcs = length(unique(species)), 
-              no_obs = length(species)) %>% 
+              no_obs = length(species),
+              # Species richness
+              D = no_spcs/sqrt(no_obs),
+              # Species diversity, Shannon index
+              H = ) %>% 
     ungroup %>% 
     # Normalize by terrestrial area
     mutate(spcs_per_ha = no_spcs/.data[[polys_area_fld]], 
@@ -219,11 +282,8 @@ get_pollinators_in_anp_zones <- function(name, date_range, anps_proj, buffer_dis
 }
 
 # Create database --------------------------------------------------------------
-# ANPs
-anps <- st_read(anp_fp)
-
-# Prep ANP polys for processing
-anps_proj <- anps %>% 
+# Prep ANP polys for processing ----
+anps_proj <- st_read(anp_fp) %>% 
   select(ID_ANP) %>% 
   st_transform(crs=6372) %>% 
   st_set_precision(1e5)  %>% 
@@ -245,7 +305,7 @@ anps_terr$area_ha <- anps_terr %>%
 # Save
 anps_terr %>% st_write(anp_terr_fp, delete_dsn=T)
 
-# Pollinators
+# Pollinators ----
 out_anps <- pol_groups %>% 
   map(get_pollinators_in_anp_zones, date_range, anps_terr, buffer_distance)
   
@@ -263,6 +323,9 @@ fp_out <- file.path('data/data_out/ANPs',
 out_allpols %>% write_csv(fp_out)
 
 # Load previously-created data -------------------------------------------------
+date_min <- as.POSIXct(str_c(date_range[[1]], "-01-01"))
+date_max <- as.POSIXct(str_c(date_range[[2]], "-12-31"))
+
 fp_out <- file.path('data/data_out/ANPs', 
                     str_c('anps_allpols_', strftime(date_min, format="%Y"), 
                           '_to_', strftime(date_max, format="%Y"), '_buffer', 
@@ -277,18 +340,21 @@ buff_str <- str_c('dentro de ', buffer_distance, ' km')
 outside_str <- str_c('más de ', buffer_distance, ' km')
 
 # Abundance (plot) ----
+var <- 'obs_per_ha'
+
+anps_stats
 anps_stats_longer_obs_dens <- anps_stats %>% 
-  pivot_longer(cols = matches('obs_per_ha'), names_to = 'zone', 
-               names_prefix = 'obs_per_ha_', values_to = 'obs_per_ha') %>% 
+  pivot_longer(cols = matches(var), names_to = 'zone', 
+               names_prefix = str_c(var, '_'), values_to = var) %>% 
   mutate(zone = zone %>% 
-           recode(obs_per_ha = 'adentro', 
+           recode(var = 'adentro', 
                   cerca = buff_str, 
                   afuera = outside_str) %>% 
            factor(levels = c('adentro', buff_str, outside_str))) %>% 
-  select(rowname, pol_group, zone, obs_per_ha)
+  select(rowname, pol_group, zone, .data[[var]])
 
 # Boxplot
-(abun_all_box <- ggplot(anps_stats_longer_obs_dens, aes(x=obs_per_ha, y=pol_group)) +
+(abun_all_box <- ggplot(anps_stats_longer_obs_dens, aes(x=.data[[var]], y=pol_group)) +
     geom_boxplot(aes(fill=zone), position=position_dodge(.9), outlier.shape=NA) + 
     coord_flip(xlim = c(0,0.036)) +
     scale_fill_brewer(palette="Set2", 
