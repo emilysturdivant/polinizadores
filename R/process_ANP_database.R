@@ -5,19 +5,22 @@
 # Load libraries ---------------------------------------------------------------
 library(sf)
 library(units)
-library(tidyverse)
 library(tmap)
 tmap_mode('view')
 library(mapview)
 library(patchwork)
+library(vegan)
+library(tidyverse)
 
 # Initialize -------------------------------------------------------------------
 buffer_distance <- set_units(1, 'km')
+date_range <- c(2010, 2020)
+
 anp_fp <- 'data/input_data/context_Mexico/SHAPE_ANPS/182ANP_Geo_ITRF08_Julio04_2019.shp'
 anp_dir <- 'data/data_out/ANPs'
 anp_terr_fp <- file.path(anp_dir, 'ANPs_terr_singlepart.geojson')
 pol_groups <- c('Abejas', 'Avispas', 'Colibries', 'Mariposas', 'Moscas', 'Murcielagos')
-date_range <- c(2010, 2020)
+
 # Mexico
 mex <- raster::getData('GADM', country='MEX', level=0, 
                        path='data/input_data/context_Mexico') %>% 
@@ -26,29 +29,15 @@ mex <- raster::getData('GADM', country='MEX', level=0,
   st_simplify(dTolerance=20)
 
 # Load data --------------------------------------------------------------------
-# Mexico 
-# mex <- raster::getData(
-#   'GADM', country='MEX', level=0, path='data/input_data/context_Mexico') %>% 
-#   st_as_sf(crs=4326) %>% 
-#   st_simplify(dTolerance = 0.02)
-# mex_munis <- raster::getData(
-#   'GADM', country='MEX', level=2, path='data/input_data/context_Mexico') %>% 
-#   st_as_sf(crs=4326) 
-# mex_est <- raster::getData(
-#   'GADM', country='MEX', level=1, path='data/input_data/context_Mexico') %>% 
-#   st_as_sf(crs=4326) 
-# 
 # # Biomes
-# data_dir <- 'data/input_data/environment_variables/TEOW_WWF_biome'
-# shp_fp <- list.files(data_dir, '.shp$', full.names = T, recursive = T)
-# biomes_crop <- st_read(shp_fp) %>% 
-#   st_crop(st_bbox(mex) )
+# shp_fp <- 'data/input_data/environment_variables/CONABIO/ecort08gw.shp'
+# biomes <- st_read(shp_fp)
 # 
 # # Elevation
 # alt <- raster::getData(
 #   'alt', country='MEX', path='data/input_data/context_Mexico')
 
-library(vegan)
+
 # Convert date range
 date_min <- as.POSIXct(str_c(date_range[[1]], "-01-01"))
 date_max <- as.POSIXct(str_c(date_range[[2]], "-12-31"))
@@ -60,9 +49,7 @@ df <- st_read(pol_fp) %>%
   # Filter to date range
   filter(eventDate >= date_min & eventDate <= date_max) 
 
-# Format data for vegan
-
-# Get count of each species per site
+# Dummy dataset for testing
 polys_id_fld <- 'ID_ANP'
 anps_dummy <- tibble(ID_ANP = seq(1,10) %>% as.character, 
                      area_ha = sample.int(56, 10, replace=T))
@@ -70,7 +57,7 @@ df[[polys_id_fld]] <- sample.int(10, nrow(df), replace=T) %>%
   as.character
 df <- left_join(df, anps_dummy)
 
-
+# Group by ANP and pivot wide (separate column with count for each species)
 spec_df <- df %>% 
   st_drop_geometry %>% 
   group_by(.data[[polys_id_fld]], area_ha, species) %>% 
@@ -79,33 +66,64 @@ spec_df <- df %>%
   pivot_wider(id_cols = all_of(c(polys_id_fld, 'area_ha')), names_from = species, values_from = n) %>%
   replace(is.na(.), 0)
 
+brillouin <- function(x) {
+  # Brillouin Index (HB) is a modification of the Shannon-Wiener Index that 
+  # is preferred when sample randomness cannot be guaranteed. 
+  # Use Brobdingnag to be able to calculate greater than factorial(170)
+  N <- sum(x, na.rm = T)
+  # Stirling's approximation of factorial
+  stirling <- function(n){n^n*exp(-n)*sqrt(2*pi*n)}
+  sum_logs <- x[x != 0] %>% 
+    map(function(x){
+      Brobdingnag::as.brob(x) %>% 
+        stirling %>% 
+        log
+      }) %>% 
+    flatten_dbl %>% 
+    sum(na.rm=T)
+  (log(stirling(Brobdingnag::as.brob(N))) - sum_logs)/N
+}
+
 # Calculate simple richness and two indices
-spec_df %>% 
+div_df <- spec_df %>% 
   rowwise() %>%
   mutate(
-    n = sum(c_across(where(is.numeric)) > 0, na.rm=T), # simple richness
-    N = sum(c_across(where(is.numeric)), na.rm=T), # simple abundance
+    n = sum(c_across(matches('.* .*')) > 0, na.rm=T), # simple richness
+    N = sum(c_across(matches('.* .*')), na.rm=T), # simple abundance
     D_menhinick = n/sqrt(N), # Menhinick's index
-    D_margalef = (n-1)/log(N) # Margalef's index
-  ) %>% 
-  # ungroup %>% 
-  select(ID_ANP, n, N, D_menhinick, D_margalef)
+    D_margalef = (n-1)/log(N), # Margalef's index
+    # Rarefaction
+    # rarefy = rarefy(c_across(matches('.* .*')), sample=10, MARGIN=1), # rarefy
+    # Diversity (Shannon-Weiner index) - most common index
+    shannon = diversity(c_across(matches('.* .*')), index='shannon'), # H'
+    # Diversity Brillouin Index (HB) - preferred when sample randomness cannot be guaranteed
+    brillouin = brillouin(c_across(where(is.numeric))), # HB
+    # Diversity (Simpson's index)
+    simpson = diversity(c_across(matches('.* .*')), index='simpson'), # lambda
+    # Evenness - Hill's ratios
+    even_hill_shan = exp(shannon) / n,
+    # True diversity
+    true_shannon = exp(shannon),
+  ) %>%
+  ungroup %>%
+  select(-matches('.* .*'))
+div_df
 
-# density
-spec_df %>% 
-  select(ID_ANP:'Anthidiellum apicale') %>% 
+# Density / normalized abundance
+dens_df <- spec_df %>% 
+  # density for each species
   mutate(across(matches('.* .*'), ~ .x/area_ha)) %>% 
   rowwise() %>%
   mutate(
-    # n = sum(c_across(where(is.numeric)) > 0, na.rm=T), # simple richness
-    N = sum(c_across(matches('.* .*')), na.rm=T), # simple abundance
-    # D_menhinick = n/sqrt(N), # Menhinick's index
-    # D_margalef = (n-1)/log(N) # Margalef's index
-  )
+    # sum densities
+    N_dens = sum(c_across(matches('.* .*')), na.rm=T), # normalized abundance
+    n = sum(c_across(matches('.* .*')) > 0, na.rm=T), # simple richness
+    D_menhinick = n/sqrt(N_dens), # Menhinick's index
+    D_margalef = (n-1)/log(N_dens), # Margalef's index
+  ) %>% 
+  select(.data[[polys_id_fld]], N_dens, D_menhinick)
 
-# rarefaction
-
-
+div_df <- full_join(div_df, dens_df, by=polys_id_fld)
 
 # Functions --------------------------------------------------------------------
 count_pollinators_in_polys <- function(
