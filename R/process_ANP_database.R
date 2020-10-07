@@ -11,15 +11,23 @@ library(mapview)
 library(patchwork)
 library(vegan)
 library(tidyverse)
+library(viridis)
 
 # Initialize -------------------------------------------------------------------
-buffer_distance <- set_units(1, 'km')
-date_range <- c(2010, 2020)
+buffer_distance <- set_units(10, 'km')
+date_range <- c(2000, 2020)
+date_min <- as.POSIXct(str_c(date_range[[1]], "-01-01"))
+date_max <- as.POSIXct(str_c(date_range[[2]], "-12-31"))
 
 anp_fp <- 'data/input_data/context_Mexico/SHAPE_ANPS/182ANP_Geo_ITRF08_Julio04_2019.shp'
 anp_dir <- 'data/data_out/ANPs'
 anp_terr_fp <- file.path(anp_dir, 'ANPs_terr_singlepart.geojson')
 pol_groups <- c('Abejas', 'Avispas', 'Colibries', 'Mariposas', 'Moscas', 'Murcielagos')
+
+anp_stats_fp <- file.path('data/data_out/ANPs', 
+                    str_c('anps_allpols_', strftime(date_min, format="%Y"), 
+                          '_to_', strftime(date_max, format="%Y"), '_buffer', 
+                          buffer_distance, 'km.csv'))
 
 # Mexico
 mex <- raster::getData('GADM', country='MEX', level=0, 
@@ -37,35 +45,7 @@ mex <- raster::getData('GADM', country='MEX', level=0,
 # alt <- raster::getData(
 #   'alt', country='MEX', path='data/input_data/context_Mexico')
 
-
-# Convert date range
-date_min <- as.POSIXct(str_c(date_range[[1]], "-01-01"))
-date_max <- as.POSIXct(str_c(date_range[[2]], "-12-31"))
-name <- 'Abejas'
-
-# Load pollinator file
-pol_fp <- file.path('data/data_out/pollinator_points', str_c(name, '.geojson'))
-df <- st_read(pol_fp) %>% 
-  # Filter to date range
-  filter(eventDate >= date_min & eventDate <= date_max) 
-
-# Dummy dataset for testing
-polys_id_fld <- 'ID_ANP'
-anps_dummy <- tibble(ID_ANP = seq(1,10) %>% as.character, 
-                     area_ha = sample.int(56, 10, replace=T))
-df[[polys_id_fld]] <- sample.int(10, nrow(df), replace=T) %>% 
-  as.character
-df <- left_join(df, anps_dummy)
-
-# Group by ANP and pivot wide (separate column with count for each species)
-spec_df <- df %>% 
-  st_drop_geometry %>% 
-  group_by(.data[[polys_id_fld]], area_ha, species) %>% 
-  summarize(n = length(species)) %>% 
-  ungroup %>% 
-  pivot_wider(id_cols = all_of(c(polys_id_fld, 'area_ha')), names_from = species, values_from = n) %>%
-  replace(is.na(.), 0)
-
+# Functions --------------------------------------------------------------------
 brillouin <- function(x) {
   # Brillouin Index (HB) is a modification of the Shannon-Wiener Index that 
   # is preferred when sample randomness cannot be guaranteed. 
@@ -78,54 +58,12 @@ brillouin <- function(x) {
       Brobdingnag::as.brob(x) %>% 
         stirling %>% 
         log
-      }) %>% 
+    }) %>% 
     flatten_dbl %>% 
     sum(na.rm=T)
   (log(stirling(Brobdingnag::as.brob(N))) - sum_logs)/N
 }
 
-# Calculate simple richness and two indices
-div_df <- spec_df %>% 
-  rowwise() %>%
-  mutate(
-    n = sum(c_across(matches('.* .*')) > 0, na.rm=T), # simple richness
-    N = sum(c_across(matches('.* .*')), na.rm=T), # simple abundance
-    D_menhinick = n/sqrt(N), # Menhinick's index
-    D_margalef = (n-1)/log(N), # Margalef's index
-    # Rarefaction
-    # rarefy = rarefy(c_across(matches('.* .*')), sample=10, MARGIN=1), # rarefy
-    # Diversity (Shannon-Weiner index) - most common index
-    shannon = diversity(c_across(matches('.* .*')), index='shannon'), # H'
-    # Diversity Brillouin Index (HB) - preferred when sample randomness cannot be guaranteed
-    brillouin = brillouin(c_across(where(is.numeric))), # HB
-    # Diversity (Simpson's index)
-    simpson = diversity(c_across(matches('.* .*')), index='simpson'), # lambda
-    # Evenness - Hill's ratios
-    even_hill_shan = exp(shannon) / n,
-    # True diversity
-    true_shannon = exp(shannon),
-  ) %>%
-  ungroup %>%
-  select(-matches('.* .*'))
-div_df
-
-# Density / normalized abundance
-dens_df <- spec_df %>% 
-  # density for each species
-  mutate(across(matches('.* .*'), ~ .x/area_ha)) %>% 
-  rowwise() %>%
-  mutate(
-    # sum densities
-    N_dens = sum(c_across(matches('.* .*')), na.rm=T), # normalized abundance
-    n = sum(c_across(matches('.* .*')) > 0, na.rm=T), # simple richness
-    D_menhinick = n/sqrt(N_dens), # Menhinick's index
-    D_margalef = (n-1)/log(N_dens), # Margalef's index
-  ) %>% 
-  select(.data[[polys_id_fld]], N_dens, D_menhinick)
-
-div_df <- full_join(div_df, dens_df, by=polys_id_fld)
-
-# Functions --------------------------------------------------------------------
 count_pollinators_in_polys <- function(
   pts_sfc, polys_sfc, polys_id_fld='ID_ANP', polys_area_fld='area_ha'
 ){
@@ -150,7 +88,65 @@ count_pollinators_in_polys <- function(
            obs_per_ha = no_obs/.data[[polys_area_fld]])
 }
 
-# Function
+get_diversity_metrics <- function(df, polys_id_fld = 'rowname', polys_area_fld = 'area_ha'){
+  # Group by ANP and pivot wide (separate column with count for each species)
+  spec_df <- df %>% 
+    st_drop_geometry %>% 
+    group_by(.data[[polys_id_fld]], .data[[polys_area_fld]], species) %>% 
+    summarize(n = length(species)) %>% 
+    ungroup %>% 
+    pivot_wider(id_cols = all_of(c(polys_id_fld, polys_area_fld)), 
+                names_from = species, values_from = n) %>%
+    replace(is.na(.), 0)
+  
+  # Get names of species columns
+  spec_names <- df %>% st_drop_geometry %>% select(species) %>% distinct %>% deframe
+  
+  # Calculate simple richness and two indices
+  div_df <- spec_df %>% 
+    rowwise() %>%
+    mutate(
+      richness = sum(c_across(all_of(spec_names)) > 0, na.rm=T), # simple richness
+      richness_norm = richness / .data[[polys_area_fld]], 
+      abundance = sum(c_across(all_of(spec_names)), na.rm=T), # simple abundance
+      D_menhinick = richness/sqrt(abundance), # Menhinick's index
+      D_margalef = (richness-1)/log(abundance), # Margalef's index
+      # Rarefaction
+      # rarefy = rarefy(c_across(matches('.* .*')), sample=10, MARGIN=1), # rarefy
+      # Diversity (Shannon-Weiner index) - most common index
+      shannon = diversity(c_across(all_of(spec_names)), index='shannon'), # H'
+      # Diversity Brillouin Index (HB) - preferred when sample randomness cannot be guaranteed
+      brillouin = brillouin(c_across(where(is.numeric))), # HB
+      # Diversity (Simpson's index)
+      simpson = diversity(c_across(all_of(spec_names)), index='simpson'), # lambda
+      # Evenness - Hill's ratios
+      even_hill_shan = exp(shannon) / richness,
+      # True diversity
+      true_shannon = exp(shannon),
+    ) %>%
+    ungroup %>%
+    select(-all_of(spec_names))
+  
+  # Density / normalized abundance
+  dens_df <- spec_df %>% 
+    # density for each species
+    mutate(across(all_of(spec_names), ~ .x/.data[[polys_area_fld]])) %>% 
+    rowwise() %>%
+    mutate(
+      # sum densities
+      abundance_norm = sum(c_across(all_of(spec_names)), na.rm=T), # normalized abundance
+      # D_menhinick = n/sqrt(abundance_norm), # Menhinick's index
+      # D_margalef = (n-1)/log(abundance_norm), # Margalef's index
+    ) %>% 
+    select(.data[[polys_id_fld]], abundance_norm)
+  
+  # Join normalized abundance to the diversity metrics
+  div_df <- full_join(div_df, dens_df, by=polys_id_fld)
+  
+  # Return
+  return(div_df)
+}
+
 get_buffer_conditional <- function(buffer_distance, anps_proj, area_fld='buff_area_ha'){
   # NPA buffer ---- 
   buffer_fp <- str_c('data/intermediate_data/anps_buffer_', buffer_distance,'km.geojson')
@@ -237,7 +233,7 @@ get_voronois_conditional <- function(anps_proj, buffer_distance){
   if(file.exists(vrnoi_fp)){
     
     # Load file if it already exists 
-    st_read(vrnoi_fp)
+    vpols <- st_read(vrnoi_fp)
     
   } else {
     
@@ -256,7 +252,41 @@ get_voronois_conditional <- function(anps_proj, buffer_distance){
   return(vpols)
 }
 
-get_pollinators_in_anp_zones <- function(name, date_range, anps_proj, buffer_distance, polys_id_fld='rowname'){
+get_diversity_for_zone_polys <- function(df, zone_polys, zone_str, polys_id_fld, polys_area_fld){
+  df <- df %>% 
+    # Group pollinator points by intersecting ANP 
+    st_transform(crs = st_crs(zone_polys)) %>% 
+    st_join(zone_polys, left=F) %>% {
+      if(nrow(.) > 0) {
+        
+        # Get diversity and abundance of species
+        get_diversity_metrics(., polys_id_fld, polys_area_fld)
+        
+      } else {
+        tibble(!!polys_id_fld := character(), !!polys_area_fld := numeric())
+        } # Make empty tibble if there are no pollinators in the given zone
+    }
+  
+  # Get just the polygon ID and area
+  all_ids <- zone_polys %>% 
+    st_drop_geometry() %>% 
+    select(.data[[polys_id_fld]], .data[[polys_area_fld]])
+  
+  # Join so that we have NA anywhere statistics are missing
+  full_join(all_ids, df) %>% 
+    # Set zone
+    mutate(zone = zone_str)
+}
+
+get_pollinators_in_anp_zones <- function(name, date_range, anps_terr, 
+                                         buffer_distance, 
+                                         polys_id_fld='rowname', 
+                                         polys_area_fld = 'area_ha'){
+  
+  # Zone codes
+  inside_str <- str_c('Inside NPA')
+  buff_str <- str_c('Buffer ', buffer_distance, ' km')
+  outside_str <- str_c('Outside buffer')
   
   # Convert date range
   date_min <- as.POSIXct(str_c(date_range[[1]], "-01-01"))
@@ -268,39 +298,39 @@ get_pollinators_in_anp_zones <- function(name, date_range, anps_proj, buffer_dis
     # Filter to date range
     filter(eventDate >= date_min & eventDate <= date_max) 
   
-  # Get diversity and abundance of pollinators within NPA
-  anps2 <- count_pollinators_in_polys(df, anps_proj, polys_id_fld = polys_id_fld)
+  # Get diversity and abundance of pollinators within NPA ----
+  anps_inside <- get_diversity_for_zone_polys(df, anps_terr, inside_str, polys_id_fld, polys_area_fld)
   
-  # NPA buffer
-  anps_buff <- get_buffer_conditional(buffer_distance, anps_proj, area_fld='buff_area_ha')
+  # NPA buffer ----
+  anps_buff <- get_buffer_conditional(buffer_distance, anps_terr, area_fld='area_ha')
   
   # Get diversity and abundance of pollinators in NPA buffer
-  anps3 <- count_pollinators_in_polys(df, anps_buff, polys_id_fld = polys_id_fld, polys_area_fld='buff_area_ha') %>% 
-    full_join(anps2, ., by = polys_id_fld, suffix=c('', '_cerca'))
+  anps_buffer <- get_diversity_for_zone_polys(df, anps_buff, buff_str, polys_id_fld, polys_area_fld)
   
-
-  # Voronoi polygons
-  vpols <- get_voronois_conditional(anps_proj, buffer_distance)
+  # Voronoi polygons ----
+  vpols <- get_voronois_conditional(anps_terr, buffer_distance)
   
   # Get diversity and abundance of pollinators outside NPA buffer
-  anps4 <- count_pollinators_in_polys(df, vpols, polys_id_fld = polys_id_fld, polys_area_fld='area_ha') %>% 
-    full_join(anps3, ., by = polys_id_fld, suffix=c('', '_afuera'))
+  anps_outside <- get_diversity_for_zone_polys(df, vpols, outside_str, polys_id_fld, polys_area_fld)
   
-  anps4$pol_group <- name
+  # Concatenate the three DFs
+  anps_df <- bind_rows(anps_inside, anps_buffer, anps_outside)
+
+  # Set pollinator group name
+  anps_df$pol_group <- name
   
   # Save
   fp_out <- file.path('data/data_out/ANPs', 
                       str_c('anps_', name, '_', strftime(date_min, format="%Y"), 
                             '_to_', strftime(date_max, format="%Y"), '_buffer', 
                             buffer_distance, 'km.csv'))
-  anps4 %>% write_csv(fp_out)
+  anps_df %>% write_csv(fp_out)
   
   # Return
-  return(anps4)
+  return(anps_df)
 }
 
-# Create database --------------------------------------------------------------
-# Prep ANP polys for processing ----
+# Prep ANP polys for processing ================================================
 anps_proj <- st_read(anp_fp) %>% 
   select(ID_ANP) %>% 
   st_transform(crs=6372) %>% 
@@ -323,160 +353,276 @@ anps_terr$area_ha <- anps_terr %>%
 # Save
 anps_terr %>% st_write(anp_terr_fp, delete_dsn=T)
 
-# Pollinators ----
-out_anps <- pol_groups %>% 
-  map(get_pollinators_in_anp_zones, date_range, anps_terr, buffer_distance)
-  
-out_allpols <- out_anps %>% 
-  reduce(rbind)
+# Create database ==============================================================
+anps_terr<- st_read(anp_terr_fp)
 
-out_allpols_wide <- out_allpols %>% 
-  pivot_wider(id_cols = rowname, names_from = pol_group, 
-              values_from = no_spcs:obs_per_ha_afuera)
-
-fp_out <- file.path('data/data_out/ANPs', 
-                    str_c('anps_allpols_', strftime(date_min, format="%Y"), 
-                          '_to_', strftime(date_max, format="%Y"), '_buffer', 
-                          buffer_distance, 'km.csv'))
-out_allpols %>% write_csv(fp_out)
-
-# Load previously-created data -------------------------------------------------
-date_min <- as.POSIXct(str_c(date_range[[1]], "-01-01"))
-date_max <- as.POSIXct(str_c(date_range[[2]], "-12-31"))
-
-fp_out <- file.path('data/data_out/ANPs', 
-                    str_c('anps_allpols_', strftime(date_min, format="%Y"), 
-                          '_to_', strftime(date_max, format="%Y"), '_buffer', 
-                          buffer_distance, 'km.csv'))
-anps_stats <- read_csv(fp_out, col_types='cniinnniinnniinnc') %>% 
-  mutate(rowname = as.character(rowname))
-
-
-# Data to longer format and plot -----------------------------------------------
 # Initialize zone codes
-buff_str <- str_c('dentro de ', buffer_distance, ' km')
-outside_str <- str_c('más de ', buffer_distance, ' km')
+inside_str = 'Inside NPA'
+buff_str <- str_c('Buffer ', buffer_distance, ' km')
+outside_str <- str_c('Outside buffer')
 
-# Abundance (plot) ----
-var <- 'obs_per_ha'
+# Pollinators
+anps_stats <- pol_groups %>% 
+  map(get_pollinators_in_anp_zones, date_range, anps_terr, buffer_distance) %>% 
+  reduce(rbind) %>% 
+  mutate(zone = factor(zone, levels = c(inside_str, buff_str, outside_str)))
 
-anps_stats
-anps_stats_longer_obs_dens <- anps_stats %>% 
-  pivot_longer(cols = matches(var), names_to = 'zone', 
-               names_prefix = str_c(var, '_'), values_to = var) %>% 
-  mutate(zone = zone %>% 
-           recode(var = 'adentro', 
-                  cerca = buff_str, 
-                  afuera = outside_str) %>% 
-           factor(levels = c('adentro', buff_str, outside_str))) %>% 
-  select(rowname, pol_group, zone, .data[[var]])
+anps_stats %>% write_csv(anp_stats_fp)
 
+# Load previously-created data =================================================
+# Initialize zone codes
+inside_str = 'Inside NPA'
+buff_str <- str_c('Buffer ', buffer_distance, ' km')
+outside_str <- str_c('Outside buffer')
+
+# Get lookup table for rownames to ID_ANP
+anps_terr<- st_read(anp_terr_fp)
+row2id <- anps_terr %>% st_drop_geometry %>% select(rowname, ID_ANP)
+
+# Read data and perform some tidying
+anps_stats <- read_csv(anp_stats_fp) %>% 
+  mutate(rowname = as.character(rowname),
+         across(everything(), replace_na, 0),
+         zone = factor(zone, levels = c(inside_str, buff_str, outside_str)), 
+         richness_norm = richness_norm * 100, 
+         abundance_norm = abundance_norm * 100) %>% 
+  full_join(row2id)
+
+# Visualize --------------------------------------------------------------------
+# Plotting functions -----
+plot_stats_boxjitter_by_stat <- function(df, stat, stat_name, percentile){
+  
+  # Prep for plot
+  # Filter to ANP subsets with values in at least one zone
+  df_long <- df %>% 
+    group_by(rowname, pol_group) %>% 
+    filter(sum(abundance) > 0) %>% 
+    ungroup %>% 
+    pivot_longer(cols=all_of(stats_list), names_to = 'statistic') %>% 
+    filter(statistic == stat)
+  
+  # Function to filter DF and make plot
+  make_plot <- function(df_long, pol, percentile){
+    # Plot each pollinator
+    df_filt <- df_long %>% 
+      filter(pol_group == pol)
+    
+    # Get counts of ANPs and ANP subsets 
+    n_filt_anp_subs <- df_filt %>% select(rowname) %>% distinct %>% nrow
+    n_filt_anps <- df_filt %>% select(ID_ANP) %>% distinct %>% nrow
+    
+    # Make plot
+    plot_title <- str_glue('{pol}, N = {n_filt_anp_subs} NPA subsets ({n_filt_anps} NPAs)')
+    display_stat_by_zones(df_filt, plot_title, percentile)
+  }
+  
+  # Make plots
+  p1 <- make_plot(df_long, 'Colibries', percentile)
+  p2 <- make_plot(df_long, 'Mariposas', percentile)
+  p3 <- make_plot(df_long, 'Abejas', percentile)
+  p4 <- make_plot(df_long, 'Murcielagos', percentile)
+  p5 <- make_plot(df_long, 'Avispas', percentile)
+  p6 <- make_plot(df_long, 'Moscas', percentile)
+  
+  # Put it all together
+  p1 / p2 / p3 / p4 / p5 / p6 + 
+    plot_annotation(
+      title = str_glue('{stat_name}')
+    )
+}
+
+plot_stats_boxjitter_by_polgroup <- function(df, pol){
+  stats_list <- c('richness_norm', 'abundance_norm', 
+                  'brillouin', 'shannon')
+  
+  # Prep for plot
+  # Filter to ANP subsets with values in at least one zone
+  df_long <- df %>% 
+    group_by(rowname, pol_group) %>% 
+    filter(sum(abundance) > 0) %>% 
+    ungroup %>% 
+    pivot_longer(cols=all_of(stats_list), names_to = 'statistic') %>% 
+    mutate(statistic = factor(statistic, levels = stats_list))
+  
+  df_filt <- df_long %>% 
+    filter(pol_group == pol)
+  
+  # Plot each statistic
+  stat <- 'abundance_norm'
+  stat_name <- 'Normalized abundance (observations per km^2)'
+  percentile <- 0.95
+  p_abun <- display_stat_by_zones2(df_long, stat, stat_name, percentile)
+  
+  stat <- 'richness_norm'
+  stat_name <- 'Normalized richness (unique species per km^2)'
+  percentile <- 0.95
+  p_rich <- display_stat_by_zones2(df_long, stat, stat_name, percentile)
+  
+  stat <- 'brillouin'
+  stat_name <- 'Brillouin Index'
+  percentile <- 0.95
+  p_brill <- display_stat_by_zones2(df_long, stat, stat_name, percentile)
+  
+  stat <- 'shannon'
+  stat_name <- 'Shannon-Wiener Index'
+  percentile <- 1
+  p_shann <- display_stat_by_zones2(df_long, stat, stat_name, percentile)
+  
+  # Get counts of ANPs and ANP subsets 
+  n_filt_anp_subs <- df_long %>% select(rowname) %>% distinct %>% nrow
+  n_filt_anps <- df_long %>% select(ID_ANP) %>% distinct %>% nrow
+  
+  # Put it all together
+  p_abun / p_rich / p_brill / p_shann + 
+    plot_annotation(
+      title = str_glue('{pol}'),
+      subtitle = str_glue('N = {n_filt_anp_subs} NPA subsets (comprising {n_filt_anps} NPAs)')
+    )
+}
+
+display_stat_by_zones2 <- function(df_long, stat, stat_name, percentile){
+  # Filter to stat
+  df_filt <- df_long %>% 
+    filter(statistic == stat)
+  
+  p1 <- display_stat_by_zones(df_filt, stat_name, percentile)
+}
+
+display_stat_by_zones <- function(df_filt, stat_name, percentile){
+  theme_desc <- function () { 
+    theme_gray() +
+      theme(
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.subtitle = element_text(size = 10),
+        plot.title = element_text(size = 10),
+        plot.title.position = "plot",
+        legend.position = "none"
+      )
+  }
+  
+  # Boxplot of all data
+  box_full <- ggplot(df_filt, aes(x=zone, y=value, color=zone)) +
+    # geom_jitter(size = 1, alpha = 0.5) +
+    geom_boxplot(outlier.size=1, outlier.alpha = 0.5,
+                 color='black', fill=NA, width = .3) +
+    # scale_color_viridis(discrete=TRUE) +
+    # geom_violin(width=2.1, size=0.2, color='red', fill=NA) +
+    theme_desc() +
+    scale_x_discrete(limits = rev(levels(df_filt$zone))) +
+    coord_flip() +
+    labs(title=stat_name)
+  
+  # Get upper axis limit for given statistic
+  ylim_max <- df_filt$value %>% quantile(probs=percentile, na.rm=T) %>% deframe
+  
+  # Jitter points with boxplot
+  jitter_zoom <- ggplot(df_filt, aes(x=zone, y=value, color=zone)) +
+    geom_jitter(size = 1, alpha = 0.5) + 
+    scale_color_viridis(discrete=TRUE) +
+    geom_boxplot(outlier.shape=NA, color='black', fill=NA, width = .2) +
+    # geom_violin(width=2.1, size=0.2, color='red', fill=NA) + 
+    theme_desc() +
+    scale_x_discrete(limits = rev(levels(df_filt$zone))) +
+    coord_flip(ylim=c(0, ylim_max)) +
+    labs(title=str_c('Zoom < ', percentile, ' percentile'))
+  
+  # Assemble plot
+  p1 <- (box_full | jitter_zoom)
+}
+
+# Group separate parts into the original 182 ANPs ----
+anps_182 <- full_join(anps_stats, row2id) %>% 
+  group_by(ID_ANP, pol_group, zone) %>% 
+  summarize(richness = sum(richness),
+            richness_norm = mean(richness_norm), 
+            abundance = sum(abundance), 
+            abundance_norm = mean(abundance_norm), 
+            D_menhinick = mean(D_menhinick), 
+            D_margalef = mean(D_margalef), 
+            shannon = mean(shannon), 
+            brillouin = mean(brillouin), 
+            simpson = mean(simpson), 
+            even_hill_shan = mean(even_hill_shan), 
+            true_shannon = mean(true_shannon)) %>% 
+  ungroup
+
+# All pollinators, one statistic ----
+fig_dir <- 'figures/anps_and_pollinator_exploration'
+
+stat_tbl <- tibble(
+  stat = c('richness_norm', 'abundance_norm', 
+           'brillouin', 'shannon'), 
+  stat_name = c('Normalized richness (unique species per km^2)', 
+                'Normalized abundance (observations per km^2)', 
+                'Brillouin Index', 
+                'Shannon-Wiener Index'), 
+  pcntl_zoom = c(0.95, 0.95, 0.95, 1)
+)
+
+for(pol in pol_groups){
+  plot_stats_boxjitter_by_polgroup(anps_stats, pol)
+  
+  # Save
+  ggsave(file.path(fig_dir, str_c(pol, '_boxjitter_buffer', buffer_distance, 'km_', date_min, 'to', date_max, '.png')), 
+         width = 9.15, height=6.03)
+}
+
+for(i in seq(1, nrow(stat_tbl))){
+  stat <- stat_tbl[i, 'stat'] %>% deframe
+  stat_name <- stat_tbl[i, 'stat_name'] %>% deframe
+  percentile <- stat_tbl[i, 'pcntl_zoom'] %>% deframe
+  
+  # Make full plot 
+  plot_stats_boxjitter_by_stat(anps_stats, stat, stat_name, percentile)
+  
+  # Save
+  ggsave(file.path(fig_dir, str_c(stat, '_boxjitter_buffer', buffer_distance, 'km.png')), 
+         width = 9.15, height=8.03)
+}
+
+# Old versions =================================================================
 # Boxplot
-(abun_all_box <- ggplot(anps_stats_longer_obs_dens, aes(x=.data[[var]], y=pol_group)) +
-    geom_boxplot(aes(fill=zone), position=position_dodge(.9), outlier.shape=NA) + 
-    coord_flip(xlim = c(0,0.036)) +
-    scale_fill_brewer(palette="Set2", 
-                      name = 'Relación con las ANPs', 
-                      guide=guide_legend(order=1)) +
-    # scale_x_sqrt() +
-    labs(x ='Cantidad de observaciones por hectarea', 
-         y = 'Polinizador',
-         title = 'Abundancia de observaciones') +
-    theme_minimal() +
+(box_4stats_1pol <- ggplot(anps_182_long, aes(x=zone, y=value, fill=zone)) +
+    geom_boxplot(position=position_dodge(.9),
+                 outlier.alpha=0.5, outlier.size = 1
+    ) + 
+    coord_flip(
+      ylim=c(0, 30)
+      ) +
+    scale_fill_viridis(discrete=TRUE, name = 'Zone', 
+                                         guide=guide_legend(order=1)) +
+    # theme_minimal() +
     theme(
       axis.title.x = element_blank(),
-      axis.text.x = element_text(angle = 45),
+      axis.title.y = element_blank(),
+      # axis.text.x = element_text(angle = 45),
       legend.position = 'bottom'
     ) +
     # Add mean point
     stat_summary(fun=mean, geom="point", aes(group=zone), 
                  position=position_dodge(.9), size=2) +
-    geom_point(aes(shape = "media"), alpha = 0) +
+    geom_point(aes(shape = "mean"), alpha = 0) +
     guides(shape=guide_legend(title=NULL, override.aes = list(alpha = 1), 
-                              order=2)))
+                              order=2)) +
+    
+    facet_wrap(~ .data[['statistic']], nrow = 4, scales = 'free'))
 
-# Bar chart - Mean observation density
-obs_dns_means <- anps_stats_longer_obs_dens %>% 
-  group_by(pol_group, zone) %>% 
-  summarize(avg_obs_per_ha = mean(obs_per_ha, na.rm=T))
-
-(abun_all <- ggplot(obs_dns_means, aes(x=avg_obs_per_ha, y=pol_group, fill=zone)) +
-  geom_bar(stat = 'identity', position='dodge') +
-  coord_flip() + 
-  labs(fill='Relación con las ANPs', 
-       x ='Media de observaciones por hectarea', 
-       y = 'Polinizador',
-       title = 'Abundancia de observaciones')+
-  theme_minimal() +
-  theme(
-    axis.title.x=element_blank(),
-    axis.text.x = element_text(angle = 45)
-  ) +
-  scale_fill_brewer(palette="Set2"))
-
-# Species diversity (plot) ----
-anps_stats_longer_spc_dens <- anps_stats %>% 
-  pivot_longer(cols = matches('spcs_per_ha'), names_to = 'zone', 
-               names_prefix = 'spcs_per_ha_', values_to = 'spcs_per_ha') %>% 
-  mutate(zone = zone %>% 
-           recode(spcs_per_ha = 'adentro', 
-                  cerca = buff_str, 
-                  afuera = outside_str) %>% 
-           factor(levels = c('adentro', buff_str, outside_str))) %>% 
-  select(rowname, pol_group, zone, spcs_per_ha)
-
-# Boxplot
-(div_all_box <- ggplot(anps_stats_longer_spc_dens, aes(x=spcs_per_ha, y=pol_group)) +
-    geom_boxplot(aes(fill=zone), position=position_dodge(.9), outlier.shape=NA) +
-    scale_fill_brewer(palette="Set2", name = 'Relación con las ANPs', 
-                      guide=guide_legend(order=1)) +
-    coord_flip(xlim = c(0,0.012)) +
-    # scale_x_sqrt() +
-    labs(
-      # fill='Relación con las ANPs', 
-         x ='Densidad de especies distintas por hectarea', 
-         y = 'Polinizador',
-         title = 'Diversidad de especies') +
-    theme_minimal() +
+# Violin plot
+(box_4stats_1pol <- ggplot(anps_182_long, aes(x=zone, y=value, fill=zone, color=zone)) +
+    geom_violin(width=2.1, size=0.2) + 
+    scale_fill_viridis(discrete=TRUE) +
+    scale_color_viridis(discrete=TRUE) +
+    # theme_minimal() +
     theme(
-      axis.title.x=element_blank(),
-      axis.text.x = element_text(angle = 45),
       legend.position = 'bottom'
     ) +
-    # Add mean point
-    stat_summary(fun=mean, geom="point", aes(group=zone), 
-                 position=position_dodge(.9), size=2) +
-    geom_point(aes(shape = "media"), alpha = 0) +
-    guides(shape = guide_legend(title=NULL, override.aes = list(alpha = 1), order=2)))
-
-# Bar chart - Mean species diversity density
-spc_dns_means <- anps_stats_longer_spc_dens %>% 
-  group_by(pol_group, zone) %>% 
-  summarize(avg_species_per_ha = mean(spcs_per_ha, na.rm=T))
-
-div_all <- ggplot(spc_dns_means, aes(x=avg_species_per_ha, y=pol_group, fill=zone)) +
-  geom_bar(stat = 'identity', position='dodge') +
-  coord_flip() + 
-  labs(fill='Relación con las ANPs', 
-       x ='Media de especies distintas por hectarea', 
-       y = 'Polinizador',
-       title = 'Diversidad de especies')+
-  theme_minimal() +
-  theme(
-    axis.title.x=element_blank(),
-    axis.text.x = element_text(angle = 45)
-  ) +
-  scale_fill_brewer(palette="Set2")
+    coord_flip() +
+    
+    facet_wrap(~ .data[['statistic']], scales = 'free'))
 
 
-# Layout (boxplots) ----
-combined <- abun_all_box + div_all_box & theme(legend.position = "right")
-combined + plot_layout(guides = "collect")
 
-# Save
-fig_dir <- 'figures/anps_and_pollinator_exploration'
-fp_out <- file.path(fig_dir, str_glue('boxplot_abunYdiv_2010to2020_buffer1km.png'))
-ggsave(fp_out, width = 12, height=7)
 
 # Join to polygons -------------------------------------------------------------
 # Load polygons
