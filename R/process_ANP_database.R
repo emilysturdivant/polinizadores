@@ -318,19 +318,22 @@ get_pollinators_in_anp_zones <- function(name, date_range, anps_terr,
     filter(eventDate >= date_min & eventDate <= date_max) 
   
   # Get diversity and abundance of pollinators within NPA ----
-  anps_inside <- get_diversity_for_zone_polys(df, anps_terr, inside_str, polys_id_fld, polys_area_fld)
+  anps_inside <- get_diversity_for_zone_polys(df, anps_terr, inside_str, 
+                                              polys_id_fld, polys_area_fld)
   
   # NPA buffer ----
   anps_buff <- get_buffer_conditional(buffer_distance, anps_terr, area_fld='area_ha')
   
   # Get diversity and abundance of pollinators in NPA buffer
-  anps_buffer <- get_diversity_for_zone_polys(df, anps_buff, buff_str, polys_id_fld, polys_area_fld)
+  anps_buffer <- get_diversity_for_zone_polys(df, anps_buff, buff_str, 
+                                              polys_id_fld, polys_area_fld)
   
   # Voronoi polygons ----
   vpols <- get_voronois_conditional(anps_terr, buffer_distance)
   
   # Get diversity and abundance of pollinators outside NPA buffer
-  anps_outside <- get_diversity_for_zone_polys(df, vpols, outside_str, polys_id_fld, polys_area_fld)
+  anps_outside <- get_diversity_for_zone_polys(df, vpols, outside_str, 
+                                               polys_id_fld, polys_area_fld)
   
   # Concatenate the three DFs
   anps_df <- bind_rows(anps_inside, anps_buffer, anps_outside)
@@ -514,7 +517,8 @@ display_stat_by_zones <- function(df_filt, stat_name, percentile){
 }
 
 display_by_biomes_zones <- function(df_filt, plot_title, percentile,
-                                    biome_var = 'DESECON1', facet_by_zone=F){
+                                    biome_var = 'DESECON1', facet_by_zone=F,
+                                    stat_name = "Brillouin Index"){
   
   theme_desc <- function () { 
     theme_gray() +
@@ -557,7 +561,7 @@ display_by_biomes_zones <- function(df_filt, plot_title, percentile,
     scale_x_discrete(limits = rev(levels(df_filt$zone)), 
                      labels = function(x) str_wrap(x, width = 10)) +
     coord_flip() +
-    ylab(label = "Brillouin Index") + 
+    ylab(label = stat_name) + 
     labs(title = plot_title)
   
   # Get upper axis limit for given statistic
@@ -628,11 +632,9 @@ display_by_biomes_zones <- function(df_filt, plot_title, percentile,
   }
 }
 
-plot_boxjitter <- function(df, pol, out_fp=NA){
-  
-  stat <- 'brillouin'
-  stat_name <- 'Brillouin Index'
-  percentile <- 0.95
+plot_boxjitter <- function(df, pol, out_fp=NA, stat = 'brillouin',
+                           stat_name = 'Brillouin Index',
+                           percentile = 0.95){
   
   # Prep for plot
   # Filter to ANP subsets with values in at least one zone
@@ -655,7 +657,7 @@ plot_boxjitter <- function(df, pol, out_fp=NA){
   
   # Make plot
   plot_title <- str_glue('{pol}, N = {n_filt_anp_subs} NPA subsets ({n_filt_anps} NPAs)')
-  display_by_biomes_zones(df_filt, plot_title, percentile)
+  display_by_biomes_zones(df_filt, plot_title, percentile, stat_name=stat_name)
   
   # Save
   if(!is.na(out_fp)){
@@ -701,8 +703,6 @@ inside_str = 'Inside NPA'
 buff_str <- str_c('Buffer ', buffer_distance, ' km')
 outside_str <- str_c('Outside buffer')
 
-
-anp_stats_fp <- "data/data_out/ANPs/anps_allpols_2000_to_2020_buffer10km_wdupes.csv"
 if(!file.exists(anp_stats_fp)){
   anps_terr<- st_read(anp_terr_fp)
   
@@ -726,7 +726,7 @@ if(!file.exists(anp_stats_fp)){
   
 }
 
-# Load previously-created data =================================================
+# Tidy ANP metrics DF =================================================
 # Get lookup table for rownames to ID_ANP
 anps_terr <- st_read(anp_terr_fp)
 row2id <- anps_terr %>% st_drop_geometry %>% select(rowname, ID_ANP)
@@ -740,7 +740,9 @@ anps_stats <- read_csv(anp_stats_fp) %>%
          abundance_norm = abundance_norm * 100) %>% 
   full_join(row2id)
 
-# Visualize --------------------------------------------------------------------
+anps_stats %>% write_csv(anp_stats_fp)
+
+# Visualize ====================================================================
 # All pollinators, one statistic
 fig_dir <- 'figures/anps_and_pollinator_exploration/with_duplicates_gt1999'
 
@@ -884,7 +886,7 @@ get_pols_in_anp_biome_zones <- function(pol_group, date_range, anps_terr,
   
   # Get diversity and abundance of pollinators within NPA 
   anps_in <- get_diversity_for_zone_polys(df, anps_biom, inside_str, 
-                                          polys_id_fld, polys_area_fld, distance=F) %>% 
+                                          polys_id_fld, polys_area_fld) %>% 
     left_join(select(anps_biom %>% st_drop_geometry(), DESECON1, ID_ANP, rowname))
   
   # Get diversity and abundance of pollinators in NPA buffer
@@ -911,10 +913,9 @@ get_pols_in_anp_biome_zones <- function(pol_group, date_range, anps_terr,
 # anps_stats <- get_pols_in_anp_biome_zones(pol_group, date_range, anps_terr, biom_diss, 
 #                                           buffer_distance, pol_dir = 'data/data_out/pollinator_points/with_duplicates')
 
-
 anps_terr <- st_read(anp_terr_fp)
 
-anp_stats_fp <- "data/data_out/ANPs/anps_allpols_2000_to_2020_buffer10km_wdupes_biomes.csv"
+# anp_stats_fp <- "data/data_out/ANPs/anps_allpols_2000_to_2020_buffer10km_wdupes_biomes.csv"
 
 if(!file.exists(anp_stats_fp)){
   
@@ -926,7 +927,7 @@ if(!file.exists(anp_stats_fp)){
   # Pollinators
   anps_stats <- pol_groups %>% 
     map(get_pols_in_anp_biome_zones, date_range, anps_terr, biom_diss, buffer_distance,
-        pol_dir = 'data/data_out/pollinator_points/with_duplicates') %>% 
+        pol_dir = 'data/data_out/pollinator_points/no_duplicates') %>% 
     reduce(rbind)
 
   anps_stats %>% write_csv(anp_stats_fp)
@@ -938,12 +939,17 @@ if(!file.exists(anp_stats_fp)){
 }
 
 # Plot
-pol_group <- 'Murcielagos'
-fig_dir <- 'figures/anps_and_pollinator_exploration/con_biomas/with_duplicates'
-plot_fn <- str_c(pol_group, '_boxjitter_biomes_buff', 
+pol_group <- 'Colibries'
+fig_dir <- 'figures/anps_and_pollinator_exploration/con_biomas'
+stat <- 'richness'
+stat_name <- 'Richness'
+stat <- 'richness_norm'
+stat_name <- 'Normalized Richness (number of species per sq. km)'
+plot_fn <- str_c(pol_group, '_', stat, '_boxjitter_biomes_buff', 
                  buffer_distance, 'km_', date_range[[1]], 
                  'to', date_range[[2]], '.png')
-plot_boxjitter(anps_stats, pol=pol_group, out_fp = file.path(fig_dir, plot_fn))
+plot_boxjitter(df=anps_stats, pol=pol_group, out_fp = file.path(fig_dir, plot_fn),
+               stat = stat, stat_name = stat_name, percentile = 0.95)
 
 # Combine all zones into one SFC ----
 bind_fp <- str_c('data/data_out/ANPs/ANPs_allzones_biomes_buffer_', 
@@ -1038,36 +1044,48 @@ mdsB <- metaMDS(spec_df, distance="bray", autotransform=FALSE, trace=0)
 plot(mdsB, display="sites", type="text")
 
 # Add land cover (natural, cropland, other) to database ========================
-# IN PROGRESS -----
-data_dir <- 'data/input_data/INEGI_2017'
-fp_usv <- list.files(path=data_dir, pattern='usv250s6g.shp$', 
-                     full.names=T, recursive=T)
+tipages_fp <- 'data/intermediate_data/polys_ag_INEGI_diss_tipages.geojson'
+tipinfo_fp <- 'data/intermediate_data/polys_ag_INEGI_diss_tip_info.geojson'
 
-usv <- st_read(fp_usv, crs=6362) %>% 
-  st_make_valid %>% 
-  st_transform(4326)
+# Get polygons from G
+if(file.exists(tipages_fp) & file.exists(tipinfo_fp)){
+  
+  usv_diss_tipages <- st_read(tipages_fp)
+  usv_diss_tip_info <- st_read(tipinfo_fp)
+  
+} else {
+  
+  data_dir <- 'data/input_data/INEGI_2017'
+  fp_usv <- list.files(path=data_dir, pattern='usv250s6g.shp$', 
+                       full.names=T, recursive=T)
+  
+  usv <- st_read(fp_usv, crs=6362) %>% 
+    st_make_valid %>% 
+    st_transform(crs=6372) %>% 
+    st_simplify(dTolerance=20)
+  
+  usv_diss <- usv %>% 
+    group_by() %>% 
+    summarize()
+  
+  usv_diss_tipages <- usv %>% 
+    group_by(TIPAGES) %>% 
+    summarize()  %>% 
+    st_simplify(preserveTopology = T, dTolerance = .0001)
+  
+  usv_diss_tip_info <- usv %>% 
+    group_by(TIP_INFO) %>% 
+    summarize() %>% 
+    st_simplify(preserveTopology = T, dTolerance = .0001)
+  
+  usv_diss_tipages %>% st_write(tipages_fp)
+  usv_diss_tip_info %>% st_write(tipinfo_fp)
+  
+}
 
-usv_diss_tipages <- usv %>% 
-  group_by(TIPAGES) %>% 
-  summarize() 
-usv_diss_tip_info <- usv %>% 
-  group_by(TIP_INFO) %>% 
-  summarize() 
-
-usv_diss_tipages <- usv_diss_tipages %>% 
-  st_simplify(preserveTopology = T, dTolerance = .0001)
-
-usv_diss_tip_info <- usv_diss_tip_info %>% 
-  st_simplify(preserveTopology = T, dTolerance = .0001)
-
-usv_diss_tipages %>% object.size() %>% print(unit='MB')
-usv_diss_tip_info %>% object.size() %>% print(unit='MB')
-
-usv_diss_tipages %>% st_write('data/intermediate_data/polys_ag_INEGI_diss_tipages.geojson')
-usv_diss_tip_info %>% st_write('data/intermediate_data/polys_ag_INEGI_diss_tip_info.geojson')
-
-usv_diss_tipages <- st_read('data/intermediate_data/polys_ag_INEGI_diss_tipages.geojson')
-usv_diss_tip_info <- st_read('data/intermediate_data/polys_ag_INEGI_diss_tip_info.geojson')
+usv_diss %>% object.size() %>% print(unit='MB')
+usv_diss %>% st_write('data/intermediate_data/polys_ag_INEGI_diss.geojson', 
+                      delete_dsn=T)
 
 
 # Dissolve to ecorregiones (7 in Mexico)

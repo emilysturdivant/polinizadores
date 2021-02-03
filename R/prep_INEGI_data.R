@@ -11,7 +11,7 @@ library(tidyverse)
 # f.usv.16 <- 'http://internet.contenidos.inegi.org.mx/contenidos/Productos/prod_serv/contenidos/espanol/bvinegi/productos/geografia/tematicas/uso_suelo/889463173359_s.zip'
 # Links from https://www.inegi.org.mx/temas/usosuelo/default.html#Descargas
 usv_url <- 'http://internet.contenidos.inegi.org.mx/contenidos/Productos/prod_serv/contenidos/espanol/bvinegi/productos/geografia/tematicas/uso_suelo/1_250_000/serie_VI/889463598459_s.zip'
-data_dir <- 'data/input_data/INEGI_2017'
+data_dir <- 'data/input_data/ag_INEGI_2017'
 
 # Municipio polygons
 f.munis <- 'data/input_data/context_Mexico/SNIB_divisionpolitica/muni_2018gw/muni_2018gw.shp'
@@ -42,7 +42,7 @@ polys_ag <- usv %>%
          CLAVE != 'ACUI')
 
 # Nómada polygons from INEGI - all are nómada (shifting cultivation) -----------
-f.usv <- 'data/input_data/INEGI_2017/conjunto_de_datos/usv250s6n.shp'
+f.usv <- file.path(data_dir, 'conjunto_de_datos', 'usv250s6n.shp')
 polys_nom <- st_read(f.usv, crs=6362) %>%  
   st_make_valid %>% 
   st_transform(4326)
@@ -56,7 +56,12 @@ polys <- list(polys_ag, polys_nom) %>%
   st_make_valid
 
 saveRDS(polys, 'data/data_out/r_data/polys_ag_INEGI.rds')
+
 polys <- readRDS('data/data_out/r_data/polys_ag_INEGI.rds')
+polys_fp <- file.path("data/intermediate_data", 'polys_ag_INEGI.gpkg')
+polys %>% 
+  st_transform(crs) %>% 
+  st_write(polys_fp)
 
 # Exploration... look at polygon counts in different categories ----
 polys_ag %>% 
@@ -513,11 +518,11 @@ mapview(polys_mun %>% filter(CVE_ENT==1))
 
 # Cultivo points ----
 # Cultivo points from INEGI - all are Agricola-Pecuaria-Forestal
-f.usv <- 'data/input_data/INEGI_usodesuelo_2017/conjunto_de_datos/usv250s6c.shp'
+f.usv <- file.path(data_dir, 'conjunto_de_datos', 'usv250s6c.shp')
 pts_cult <- st_read(f.usv, crs=6362)
 colnames(pts_cult)
 # Decode cultivos for most important pollinator crops
-key <- read_csv('data/input_data/INEGI_usodesuelo_2017/metadatos/INEGI_codes.csv')
+key <- read_csv(file.path(data_dir, 'metadatos', 'INEGI_codes.csv'))
 key %<>% pmap(~set_names(..2, ..1)) %>% unlist() %>% 
   c(.default = NA_character_)
 pts_cult %<>% mutate(Culti1=recode(Culti1, !!!key),
@@ -535,7 +540,7 @@ culti_ct <- cults %>%
 
 # Forestales points ----
 # Forestales points from INEGI - all are Agricola-Pecuaria-Forestal
-f.usv <- 'data/input_data/INEGI_usodesuelo_2017/conjunto_de_datos/usv250s6f.shp'
+f.usv <- file.path(data_dir, 'conjunto_de_datos', 'usv250s6f.shp')
 pts_for <- st_read(f.usv, crs=6362)
 colnames(pts_for)
 

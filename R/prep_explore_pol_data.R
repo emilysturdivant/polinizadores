@@ -166,7 +166,7 @@ sapply(mods$models, AIC)
 # iNEXT ------------------------------------------------------------------------
 library(iNEXT)
 
-
+# https://cran.r-project.org/web/packages/iNEXT/vignettes/Introduction.html
 
 
 
