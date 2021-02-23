@@ -1,5 +1,7 @@
-# Data are from GBIF
-# parameters: https://www.gbif.org/developer/occurrence#parameters
+# Load GBIF data compiled by Mauricio Quesada's team and explore
+# Exploring before pre-processing 
+# Create graphics to understand distribution of values, etc. 
+# GIB parameters: https://www.gbif.org/developer/occurrence#parameters
 
 # Load libraries ---------------------------------------------------------------
 library(tabulizer)
