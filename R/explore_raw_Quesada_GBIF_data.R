@@ -1,6 +1,6 @@
 # Load GBIF data compiled by Mauricio Quesada's team and explore
 # Exploring before pre-processing 
-# Create graphics to understand distribution of values, etc. 
+# Create graphics to understand distribution ofb values, etc. 
 # GIB parameters: https://www.gbif.org/developer/occurrence#parameters
 
 # Load libraries ---------------------------------------------------------------
@@ -19,15 +19,12 @@ library(taxize)
 library(tidyverse)
 
 # Initialize -------------------------------------------------------------------
-fig_dir <- 'figures/pol_exploration_no_iNaturalist/date_gt2009'
-name <- 'Abejas'
-fp_out <- file.path('data/data_out/pollinator_points/no_duplicates', str_c(name, '.geojson'))
-df <- st_read(fp_out)
+fig_dir <- 'figures/pol_exploration/no_iNaturalist/all_dates'
 
 # Pollinator database ----
 data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/Completos'
 fps <- list.files(data_dir, full.names = T)
-fp <- fps[[4]]
+fp <- fps[[1]]
 
 (name <- fp %>%
   basename %>% file_path_sans_ext %>%
@@ -122,8 +119,12 @@ theme_desc <- function () {
 # Species
 tot_species <- dat %>% select(species) %>% distinct %>% nrow
 tot_genus <- dat %>% select(genus) %>% distinct %>% nrow
+
+# Get bar plot by taxonomic level with out too many entries
 if (tot_species < 17){
+  
   title <- 'Especies'
+  
   # Species bar chart
   species_cnt <- dat %>% 
      group_by(species) %>% 
@@ -131,8 +132,11 @@ if (tot_species < 17){
      arrange(desc(cnt))
   spec1 <- species_cnt %>% 
     ggplot(aes(x=reorder(species, cnt), y=cnt))
+  
 } else {
+  
   title <- 'Géneros'
+  
   # Genus bar chart
   species_cnt <- dat %>% 
      group_by(genus) %>% 
@@ -141,10 +145,14 @@ if (tot_species < 17){
   spec1 <- species_cnt %>% 
       slice(1:40) %>% 
       ggplot(aes(x=reorder(genus, cnt), y=cnt))
+  
 }
+
+tot_fam <- dat %>% select(family) %>% distinct %>% nrow
+
 if(name=='Mariposas'){
+  
   title <- 'Familias'
-  tot_fam <- dat %>% select(family) %>% distinct %>% nrow
   # Family bar chart
   (species_cnt <- dat %>% 
     group_by(family) %>% 
@@ -263,16 +271,7 @@ patchwork + plot_annotation(
 ggsave(file.path(fig_dir, str_c('pol_', name, '_simple5.png')), 
        width = 9.15, height=6.03)
 
-# Filter to dates since 2010
-df <- df %>% 
-  filter(eventDate > 2009)
-
 # Convert table to simple features data frame ----------------------------------
-mex <- raster::getData('GADM', country='MEX', level=0, 
-                       path='data/input_data/context_Mexico') %>% 
-  st_as_sf(crs=4326) 
-anps <- st_read('data/input_data/context_Mexico/SHAPE_ANPS/182ANP_Geo_ITRF08_Julio04_2019.shp')
-
 # Functions to create maps with tmap
 get_biggest_groups <- function(df, rank, facets){
 
@@ -290,9 +289,14 @@ get_biggest_groups <- function(df, rank, facets){
   df %>% filter(.data[[rank]] %in% grps_list)
 }
 
-map_pts_taxon_facets <- function(df, rank, name, facets, fig_dir){
+map_pts_taxon_facets <- function(df, name, rank='species', facets=25, fig_dir=NA){
   # Subset to top taxa
   df_sub <- df %>% get_biggest_groups(rank, facets)
+  
+  # Get mexico boundary
+  mex <- raster::getData('GADM', country='MEX', level=0, 
+                         path='data/input_data/context_Mexico') %>% 
+    st_as_sf(crs=4326) 
   
   if('nocturna' %in% colnames(df_sub)){
     # Map
@@ -312,19 +316,66 @@ map_pts_taxon_facets <- function(df, rank, name, facets, fig_dir){
       tm_facets(by = rank, free.coords=F)
   }
 
-  # Save
-  fp_out <- file.path(fig_dir, 
-                      str_c('pol_', name, '_map_', rank, '_', facets, '.png'))
-  tmap_save(tm, filename = fp_out)
-  
+  if(!is.na(fig_dir)){
+    if(dir.exists(fig_dir)){
+      # Save
+      fp_out <- file.path(fig_dir, 
+                          str_c('pol_', name, '_map_', rank, '_', facets, '.png'))
+      tmap_save(tm, filename = fp_out)
+      
+    }
+  }
+
   # Return
   return(tm)
 }
 
 # Map points by taxonomy -----
-tm_fam <- map_pts_taxon_facets(df, rank='family', name=name, facets=12, fig_dir=fig_dir)
-tm_gen <- map_pts_taxon_facets(df, rank='genus', name=name, facets=16, fig_dir=fig_dir)
-tm_spec <- map_pts_taxon_facets(df, rank='species', name=name, facets=25, fig_dir=fig_dir)
+fig_dir <- 'figures/pol_exploration/no_iNaturalist/points_gt1999/filter'
+
+# Load pre-processed data
+name <- 'Abejas'
+fp_out <- file.path('data/data_out/pollinator_points/no_duplicates', str_c(name, '.gpkg'))
+df <- st_read(fp_out)
+
+# Get supplemental data
+mex <- raster::getData('GADM', country='MEX', level=0, 
+                       path='data/input_data/context_Mexico') %>% 
+  st_as_sf(crs=4326) 
+anps <- st_read('data/input_data/context_Mexico/SHAPE_ANPS/182ANP_Geo_ITRF08_Julio04_2019.shp')
+
+# Filter to dates since 2010
+df_filt <- df %>%
+  filter(species == 'Apis mellifera')
+
+# Dates
+(edates <- ggplot(df_filt, aes(eventDate, ..count..)) + 
+    geom_histogram() +
+    coord_flip() +
+    theme_desc() +
+    scale_y_continuous(labels = comma)  +
+    labs(
+      x = NULL,
+      y = NULL,
+      title = 'eventDate'
+    ) + 
+    scale_x_datetime(breaks = date_breaks("25 years"),
+                     labels = date_format("%Y"),
+                     limits = c(as.POSIXct("1835-01-01"),
+                                as.POSIXct("2020-12-01")) ))
+ 
+df_filt1 <- df_filt %>% 
+  filter(eventDate > 1999)
+df_filt1 %>% distinct(eventDate)
+df_filt1 %>% sample_n(5) %>% select(eventDate)
+df_filt2 <- df_filt %>%
+  filter(eventDate >= date_min & eventDate <= date_max)
+
+df %>% distinct(eventDate)
+
+tm_fam <- map_pts_taxon_facets(df_filt, rank='family', name=name, facets=12, fig_dir=fig_dir)
+tm_gen <- map_pts_taxon_facets(df_filt, rank='genus', name=name, facets=16, fig_dir=fig_dir)
+tm_spec <- map_pts_taxon_facets(df_filt, rank='species', name=name, facets=25, fig_dir=fig_dir)
 
 tm_fam + tm_shape(anps) +
   tm_borders(col='green')

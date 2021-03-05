@@ -32,10 +32,11 @@ if(!file.exists(temp_fp)){
   
   dat <- read_csv(fp)
   
+  # Use taxize to get superfamily (because not included in )
   fam_list <- dat %>% 
     dplyr::select(family) %>% 
     distinct %>% 
-    mutate(superfamily = tax_name(family, get='superfamily', db='ncbi')[[3]])
+    mutate(superfamily = taxize::tax_name(family, get='superfamily', db='ncbi')[[3]])
   
   dat <- dat %>% 
     left_join(fam_list) 

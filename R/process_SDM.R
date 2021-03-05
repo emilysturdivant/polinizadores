@@ -23,199 +23,565 @@ tmap_mode('view')
 #   st_transform(crs=crs) %>% 
 #   st_simplify(dTolerance=40, preserveTopology=T) 
 mex <- getData('GADM', country='MEX', level=0,
-               path='data/input_data/context_Mexico')
-bb <- st_bbox(mex) 
+               path='data/input_data/context_Mexico') %>% 
+  st_as_sf()
 crop_dir <- file.path('data', 'input_data', 'environment_variables', 'cropped')
 
-# PRE-PROCESS environmental variables (reproject & crop) ------------------------
-worldclim_dir <- 'data/input_data/environment_variables/WorldClim'
-wwf_biomes_dir <- 'data/input_data/environment_variables/TEOW_WWF_biome'
-biomes_dir <- 'data/input_data/environment_variables/CONABIO'
-lc_dir <- 'data/input_data/ESA_LandCover'
+# Date range
+date_range <- c(2000, 2020)
+pol_groups <- c('Abejas', 'Avispas', 'Colibries', 'Mariposas', 'Moscas', 'Murcielagos')
 
-# WorldClim Bioclimatic variables ----
-# Fick and Hijmans 2017 
-srclist <- list.files(path=worldclim_dir, pattern='.tif', full.names = F)
-crplist <- list.files(path=crop_dir, pattern='.tif', full.names = F)
-if(!all(srclist %in% crplist)) {
-  # res: 0.5 deg (?)
-  url <- 'https://biogeo.ucdavis.edu/data/worldclim/v2.1/base/wc2.1_30s_bio.zip'
-  fname <- url %>% basename()
-  
-  # Download and unzip
-  download.file(url, dest=fname)
-  fps <- fname %>% 
-    unzip(list=F, exdir=worldclim_dir) 
-  unlink(fname)
-  
-  # Crop files
-  srclist <- list.files(path=worldclim_dir, pattern='.tif', full.names = TRUE)
-  dstlist <- file.path(crop_dir, basename(srclist))
-  
-  # Crop files
-  for (i in seq_along(srclist)) {
-    gdalUtils::gdalwarp(srcfile=srclist[[i]], 
-                        dstfile=dstlist[[i]], 
-                        te=bb, 
-                        overwrite=T)
-  }
+# Load environment variables ----
+predictors <- raster::stack(list.files(crop_dir, 'tif$', full.names=T))
+
+# Remove layers from predictors
+drop_lst <- c('biomes_CVEECON2', 'biomes_CVEECON1', 'biomes_CVEECON4',
+              'ESACCI.LC.L4.LC10.Map.10m.MEX_2016_2018', 
+              'usv250s6gw_USV_SVI')
+pred <- predictors[[- which(names(predictors) %in% drop_lst) ]]
+
+# Set extent for testing
+ext <- extent(mex)
+
+# Load pollinator points ----
+pol_group <- 'Abejas'
+sp <- 'Apis mellifera'
+
+# Load pollinator file
+pol_dir <- 'data/data_out/pollinator_points/with_duplicates'
+pol_fp <- file.path(pol_dir, str_c(pol_group, '.gpkg'))
+
+# Dates
+date_min <- as.POSIXct(str_c(date_range[[1]], "-01-01"))
+date_max <- as.POSIXct(str_c(date_range[[2]], "-12-31"))
+
+# Load and filter to date range
+pol_df1 <- st_read(pol_fp) %>% 
+  filter(eventDate >= date_min & eventDate <= date_max) %>% 
+  st_transform(st_crs(predictors)) %>% 
+  select(species)
+
+sp_df <- pol_df1 %>% 
+  filter(species == sp)
+
+# Map
+tm <- tm_shape(mex) +
+  tm_borders(col='darkgray') + 
+  tm_shape(sp_df) +
+  tm_dots(alpha=0.4, size=.1, col = '#b10026')
+
+tm_spec <- map_pts_taxon_facets(sp_df, rank='species', name=name, facets=1)
+
+# ~Standard random forest (from R-Spatial https://rspatial.org/raster/sdm) ----
+# Presence points ----
+# Filter to species and convert to coords DF
+sp1 <- sp_df %>% 
+  mutate(lon = unlist(map(.$geom, 1)), 
+         lat = unlist(map(.$geom, 2))) %>% 
+  st_drop_geometry() %>% 
+  select(lon, lat)
+
+# Background points ----
+# Get background points 
+set.seed(10)
+backg <- randomPoints(pred, n=1000, 
+                      # p = presence points
+                      # ext=ext, 
+                      # extf = 1.25
+) %>% 
+  as_tibble() %>% 
+  rename(lon = 'x', lat = 'y')
+
+# Split into training and testing 
+set.seed(0)
+group <- kfold(sp1, 5)
+train_1 <- sp1[group != 1, ]
+test_1 <- sp1[group == 1, ]
+
+# Split into training and testing
+set.seed(0)
+group <- kfold(backg, 5)
+train_0 <- backg[group != 1, ]
+test_0 <- backg[group == 1, ]
+
+# Extract environmental data ----
+# Training dataset 
+train <- bind_rows(train_1, train_0)
+envtrain1 <- raster::extract(pred, train, cellnumbers=T, df=T)
+
+pb_train <- c(rep(1, nrow(train_1)), rep(0, nrow(train_0)))
+envtrain1 <- data.frame( cbind(pa = pb_train, envtrain1) ) %>% 
+  mutate(across(starts_with(c('biomes', 'ESA', 'usv')), as.factor)) %>% 
+  select(-ID)
+
+# envtrain <- envtrain1 %>% select(-cells)
+# Remove duplicated cells
+envtrain <- envtrain1 %>% distinct() %>% select(-cells)
+
+# Testing datasets - get predictors for test presence and background points
+testpres <- data.frame( raster::extract(pred, test_1) ) %>%
+  mutate(across(starts_with(c('biomes', 'ESA', 'usv')), as.factor))
+
+testbackg <- data.frame( raster::extract(pred, test_0) ) %>%
+  mutate(across(starts_with(c('biomes', 'ESA', 'usv')), as.factor))
+
+# Set factor levels for test DFs to match training data
+vars <- envtrain %>% select(where(is.factor)) %>% tbl_vars
+for(var in vars){
+  levels(testpres[[var]]) <- levels(envtrain[[var]])
+  levels(testbackg[[var]]) <- levels(envtrain[[var]])
 }
 
-# WWF ecoregions ----
-# Olson et al. 2001: https://www.worldwildlife.org/publications/terrestrial-ecoregions-of-the-world
-if(!file.exists(file.path(wwf_biomes_dir, 'wwf_terr_ecos.shp'))) {
-  data_dir <- wwf_biomes_dir
-  url <- 'https://c402277.ssl.cf1.rackcdn.com/publications/15/files/original/official_teow.zip'
-  fname <- url %>% basename()
-  download.file(url, dest=fname)
-  dir.create(data_dir)
-  f <- fname %>% 
-    unzip(list=F, exdir=data_dir) 
-  unlink(fname)
+# Random forest model ----
+rf1 <- randomForest::randomForest(
+  pa ~ . -pa, 
+  data = envtrain, 
+  na.action = na.exclude,
+  importance=T)
+
+# View importance of each variable
+par(mfrow=c(1,1))
+randomForest::importance(rf1, type=1)
+randomForest::varImpPlot(rf1, type=1)
+
+# Evaluate model with test data
+erf <- dismo::evaluate(testpres, testbackg, rf1)
+erf
+plot(erf, 'ROC')
+plot(erf, 'TPR')
+
+# Map suitability prediction as continuous and presence/absence ----
+pr_rf1 <- dismo::predict(predictors, rf1, ext=ext)
+pr_rf1 <- raster::focal(pr_rf1, w=matrix(1,nrow=3, ncol=3), fun=mean, NAonly=TRUE, na.rm=TRUE) 
+
+(tr <- threshold(erf, 'prevalence'))
+(tr <- threshold(erf, 'spec_sens'))
+tr <- 0.5
+plot(pr_rf1 > tr, main='presence/absence')
+
+tmap_mode('plot')
+tm_shape(pr_rf1) + tm_raster(palette = 'viridis', title=sp, legend.reverse = T) +
+  tm_shape(mex) + tm_borders() +
+  tm_layout(legend.position=c('right', 'top'))
+
+tm_shape(pred[[22]]) + tm_raster(palette = 'viridis')
+
+# ~ blockCV ----
+# browseVignettes('blockCV') 
+# remotes::install_github("rvalavi/blockCV", dependencies = TRUE)
+library(blockCV)
+
+# Create presence-background species data 
+# Format presence points
+sp1 <- sp_df %>% 
+  distinct() %>% 
+  st_transform(crs = crs(pred)) %>% 
+  mutate(lon = unlist(map(.$geom, 1)), 
+         lat = unlist(map(.$geom, 2))) %>% 
+  st_drop_geometry() %>% 
+  select(lon, lat) %>% 
+  mutate(Species = 1)
+
+# Get background points 
+set.seed(10)
+backg <- randomPoints(pred, n=1000, 
+                      # p = presence points
+                      # ext=ext, 
+                      # extf = 1.25
+) %>% 
+  as_tibble() %>% 
+  rename(lon='x', lat='y') %>% 
+  mutate(Species = 0)
+
+pb_data <- bind_rows(sp1, backg) %>% 
+  st_as_sf(coords = c('lon', 'lat'), crs = crs(pred))
+
+# number of presence and background records
+table(pb_data$Species)
+
+# plot species data on the map
+plot(pred[['wc2.1_30s_bio_1']]) # plot raster data
+plot(pb_data[which(pb_data$Species==0), ], pch = 16, col="blue", add=TRUE) # add absence points
+plot(pb_data[which(pb_data$Species==1), ], pch = 16, col="red", add=TRUE) # add presence points
+legend(x=500000, y=8250000, legend=c("Presence","Absence"), col=c(2, 4), pch=c(16,16), bty="n")
+
+# Spatial block ----
+# Explore autocorrelation
+sac <- spatialAutoRange(rasterLayer = pred,
+                        sampleNumber = 5000,
+                        doParallel = TRUE,
+                        showPlots = TRUE)
+summary(sac)
+library(automap)
+plot(sac$variograms[[2]])
+plot(pred[['wc2.1_30s_bio_5']])
+# bio 5 is best with blocks of 162,000 m (effective range of spatial autocorrelation)
+
+# Explore block size
+rangeExplorer(rasterLayer = pred,
+              speciesData = pb_data,
+              species = "Species",
+              rangeTable = NULL,
+              minRange = 80000, # limit the search domain
+              maxRange = 500000)
+
+# Spatial blocking by specified range
+sb <- spatialBlock(speciesData = pb_data,
+                   species = "Species",
+                   rasterLayer = pred,
+                   theRange = 200000, # size of the blocks
+                   k = 5,
+                   selection = "random", # Robinson et al. 2018 use random
+                   iteration = 100, # find evenly dispersed folds
+                   numLimit = 0, # find most evenly dispersed number of records
+                   biomod2Format = TRUE,
+                   xOffset = 0, # shift the blocks horizontally
+                   yOffset = 0)
+
+# Explore generated folds
+foldExplorer(blocks = sb, 
+             rasterLayer = pred, 
+             speciesData = pb_data)
+
+# Buffering ----
+# buffering with presence-background data
+bf2 <- buffering(speciesData = pb_data, # presence-background data
+                 theRange = 200000,
+                 species = "Species",
+                 spDataType = "PB", # presence-background data type
+                 addBG = TRUE, # add background data to testing folds
+                 progress = TRUE)
+
+# # Environmental block ----
+# # environmental clustering
+# eb <- envBlock(rasterLayer = awt,
+#                speciesData = pb_data,
+#                species = "Species",
+#                k = 5,
+#                standardization = "standard", # rescale variables between 0 and 1
+#                rasterBlock = FALSE,
+#                numLimit = 50)
+
+# Evaluate PB models with blocks ----
+# Spatial blocking to evaluate random forest model ----
+# loading the libraries
+library(randomForest)
+library(precrec)
+
+# extract the raster values for the species points as a dataframe
+mydata <- raster::extract(pred, pb_data, df = TRUE)
+mydata <- mydata[,-1]
+
+# Add species column to the dataframe and remove extra column (ID)
+mydata$Species <- pb_data$Species
+
+# Extract the fold indices created in the previous section
+# the folds (list) works for all three blocking strategies
+folds <- sb$folds
+folds <- sb$foldID
+
+# create a data.frame to store the prediction of each fold (record)
+testTable <- pb_data
+testTable$pred <- NA
+
+# Regression RF
+for(k in seq_len(5)){
+  # Get training and testing indices for this fold
+  trainSet <- which(folds != k) # training set indices
+  testSet <- which(folds == k) # testing set indices
+  # Train on this fold's training set
+  rf <- randomForest(Species ~ ., 
+                     mydata[trainSet, ], 
+                     ntree = 250, 
+                     na.action = na.exclude) # model fitting on training set
+  # Predict the test set for this fold and add to test results table
+  testTable$pred[testSet] <- predict(rf, mydata[testSet, ])
 }
 
-# CONABIO Mexican ecoregions -----
-# Load and crop polygons
-data_dir <- biomes_dir
-shp_fp <- list.files(data_dir, '.shp$', full.names = T, recursive = T)
-biomes_crop <- st_read(shp_fp)
-# biomes_crop <- biomes_crop %>% st_crop(bb)
+# calculate Area Under the ROC and PR curves and plot the result
+precrec_obj <- evalmod(scores = testTable$pred, labels = testTable$Species)
+autoplot(precrec_obj)
 
-# Get template raster
-crop_flist <- list.files(crop_dir, 'wc.*.tif$', full.names = T)
-temp <- raster(crop_flist[[5]])
+# Classification RF
+# Add species column to the dataframe and remove extra column (ID)
+mydata$Species <- as.factor(pb_data$Species)
 
-# See unique values of value field
-val_flds <- biomes_crop %>% st_drop_geometry() %>% select(starts_with('CVE')) %>% tbl_vars
-
-for (val_fld in val_flds) {
-  
-  # Output filepaths
-  ras_fp <- file.path(crop_dir, str_glue('biomes_{val_fld}.tif'))
-  csv_fp <- file.path(crop_dir, str_glue('biomes_{val_fld}.csv'))
-  
-  if (!(file.exists(ras_fp) & file.exists(csv_fp))){
-    
-    # Dissolve by value field
-    biomes_crp1 <- biomes_crop %>% 
-      group_by(.data[[val_fld]]) %>% 
-      summarize() %>% 
-      rownames_to_column()
-    
-    # Drop all columns
-    biomes_spat <- biomes_crp1 %>% 
-      select() %>%
-      as('Spatial')
-    
-    # Convert to raster
-    biomes_rst <- biomes_spat %>% 
-      rasterize(y = temp)
-    
-    # Save raster
-    writeRaster(biomes_rst, filename=ras_fp, overwrite=T)
-    
-    # Save ID to biome lookup table
-    biomes_crp1 %>% st_drop_geometry() %>% write_csv(csv_fp)
-  }
+for(k in seq_len(5)){
+  # extracting the training and testing indices
+  trainSet <- which(folds != k) # training set indices
+  testSet <- which(folds == k) # testing set indices
+  rfc <- randomForest(Species ~ ., 
+                     mydata[trainSet, ], 
+                     ntree = 250, 
+                     na.action = na.exclude) # model fitting on training set
+  # predict the test set
+  testTable$pred[testSet] <- predict(rfc, mydata[testSet, ], type = "prob")[,2] 
 }
 
-# ESA land cover ---- 
-# ESA CCI land cover, two products
-# http://maps.elie.ucl.ac.be/CCI/viewer/download.php
-# original res: 300 m, much finer than the worldclim variables
-crop_flist <- list.files(crop_dir, 'wc.*.tif$', full.names = T)
-temp <- raster(crop_flist[[1]])
+# calculate Area Under the ROC and PR curves and plot the result
+precrec_obj <- evalmod(scores = testTable$pred, labels = testTable$Species)
+autoplot(precrec_obj)
 
-lc_fps <- list.files(path=lc_dir, pattern='.tif$', full.names = T)
-crop_fps <- file.path(crop_dir, basename(lc_fp))
+# Buffer folds (leave one out cross-validation) ----
+# extract the raster values for the species points as a dataframe
+mydata <- raster::extract(pred, pb_data, df = TRUE)
+mydata <- mydata[,-1]
 
-for (i in seq(1, length(crop_fps))){
-  gdalUtils::gdalwarp(srcfile=lc_fps[[i]], dstfile=crop_fps[[i]], 
-                      te=st_bbox(temp), 
-                      tr=c(xres(temp), yres(temp)), 
-                      r='mode',
-                      overwrite=T)
+# adding species column to the dataframe
+mydata$Species <- pb_data$Species
+
+# extract the fold indices from buffering object 
+# created in the previous section
+# the folds (list) works for all three blocking strategies
+folds <- bf2$folds
+
+# create a data.frame to store the prediction of each fold (record)
+testTable <- pb_data
+testTable$pred <- NA
+
+thresholds <- vector(mode='numeric', length=length(folds))
+
+for(k in seq_len(length(folds))){
+  # extracting the training and testing indices
+  # this way works with folds list (but not foldID)
+  trainSet <- unlist(folds[[k]][1]) # training set indices
+  testSet <- unlist(folds[[k]][2]) # testing set indices
+  rf <- randomForest(Species~., 
+                     mydata[trainSet, ], 
+                     ntree = 250, 
+                     na.action = na.exclude) # model fitting on training set
+  testTable$pred[testSet] <- predict(rf, mydata[testSet, ]) # predict the test set
+  # Get threshold
+  testpres <- filter(mydata[testSet, ], Species == 1)
+  testbackg <- filter(mydata[testSet, ], Species == 0)
+  erf <- dismo::evaluate(testpres, testbackg, rf)
+  thresholds[[k]] <- threshold(erf, 'spec_sens')
 }
 
-# alternative land cover from ESA: 
-# 300m 2015 product with typology defined by LCCS, for compliance with GLC2000, GlobCover 2005 and 2009
-nc_fp <- 'data/input_data/ESA_LandCover/ESACCI-LC-L4-LCCS-Map-300m-P1Y-2015-v2.0.7cds.tif'
-# Code to convert netCDF to GeoTiff and crop/reproject appropriately:
-# gdalwarp -of Gtiff -co COMPRESS=LZW -co TILED=YES -ot Byte -te -118.36889 14.53292 -86.71014 32.71804 -tr 0.008333444 0.008334154 -t_srs EPSG:4326 -r mode NETCDF:ESACCI-LC-L4-LCCS-Map-300m-P1Y-2015-v2.0.7cds.nc:lccs_class ESACCI-LC-L4-LCCS-Map-300m-P1Y-2015-v2.0.7cds.tif 
+# calculate Area Under the ROC and PR curves and plot the result
+precrec_obj <- precrec::evalmod(scores = testTable$pred, labels = testTable$Species)
+autoplot(precrec_obj)
+precrec_stats <- precrec::evalmod(scores = testTable$pred, 
+                                  labels = testTable$Species, mode='basic')
+precrec_stats
 
-# INEGI land cover ----
-fp_usv <- "data/input_data/ag_INEGI_2017/other_sources/usv250s6gw.shp"
+pROC::auc(testTable$pred)
+summary(thresholds)
 
-# Load and crop polygons
-usv_sf <- st_read(fp_usv)
-
-# Get template raster
-crop_flist <- list.files(crop_dir, 'wc.*.tif$', full.names = T)
-temp <- raster(crop_flist[[5]])
-
-# See unique values of value field
-# usv_sf %>% st_drop_geometry() %>% distinct(USV_SVI, CVE_UNION)
-val_fld <- 'USV_SVI'
-val_flds <- c('USV_SVI', 'CVE_UNION')
-
-# Output filepaths
-fn <- basename(fp_usv) %>% tools::file_path_sans_ext()
-ras_fp <- file.path(crop_dir, str_glue('{fn}_{val_fld}.tif'))
-csv_fp <- file.path(crop_dir, str_glue('{fn}_{val_fld}.csv'))
-
-if (!(file.exists(ras_fp) & file.exists(csv_fp))){
-  
-  # Dissolve by value field
-  sf_diss <- usv_sf %>% 
-    st_transform(crs = 6362) %>% 
-    st_simplify(dTolerance=80, preserveTopology=T) %>%
-    st_make_valid() %>% 
-    group_by(across(val_flds)) %>% 
-    summarize() %>% 
-    rownames_to_column()
-  
-  # Save dissolved file for GDAL
-  diss_fp <- file.path('data/intermediate_data/usv', 
-                       str_glue('{fn}_diss{val_fld}_tol80.gpkg'))
-  sf_diss %>% st_write(diss_fp)
-  
-  # Rasterize
-  writeRaster(raster(ext = extent(bb), resolution = res(temp)), 
-              filename=ras_fp, overwrite=T, datatypeCharacter = 'INT2U')
-  gdalUtils::gdal_rasterize(diss_fp, 
-                            ras_fp, 
-                            l = tools::file_path_sans_ext(basename(diss_fp)), 
-                            a ='rowname')
-  
-  # Write lookup table
-  sf_diss %>% st_drop_geometry() %>% write_csv(csv_fp)
+# Classification
+mydata$Species <- as.factor(pb_data$Species)
+for(k in seq_len(length(folds))){
+  # extracting the training and testing indices
+  # this way works with folds list (but not foldID)
+  trainSet <- unlist(folds[[k]][1]) # training set indices
+  testSet <- unlist(folds[[k]][2]) # testing set indices
+  rf <- randomForest(Species~., 
+                     mydata[trainSet, ], 
+                     ntree = 250, 
+                     na.action = na.exclude) # model fitting on training set
+  testTable$pred[testSet] <- predict(rf, mydata[testSet, ], type = "prob")[,2] # predict the test set
 }
 
-# Elevation ----
-alt_orig_fp <- 'data/input_data/environment_variables/MEX_msk_alt.tif'
-crop_fp <- file.path(crop_dir, basename(alt_orig_fp))
+# calculate Area Under the ROC and PR curves and plot the result
+precrec_obj <- precrec::evalmod(scores = testTable$pred, labels = testTable$Species)
+precrec::evalmod(scores = testTable$pred, labels = testTable$Species, mode='basic')
+autoplot(precrec_obj)
 
-if(!file.exists(crop_fp)) {
-  
-  # download altitude data 
-  alt <- raster::getData('alt', country='MEX', mask=TRUE)
-  alt %>% writeRaster(alt_orig_fp)
-  
-  # Get template file
-  crop_flist <- list.files(crop_dir, 'wc.*.tif', full.names = T)
-  temp <- raster(crop_flist[[1]])
-  
-  # resample
-  gdalUtils::gdalwarp(srcfile=alt_orig_fp, dstfile=crop_fp, 
-                      te=st_bbox(temp), 
-                      tr=c(xres(temp), yres(temp)), 
-                      r='bilinear',
-                      overwrite=T)
+# Map suitability prediction as continuous and presence/absence ----
+pr_rf <- predict(pred, rf)
+plot(pr_rf)
+
+tm_shape(pr_rf) + tm_raster(palette = 'viridis', n=2, style='cat') +
+  # tm_layout(aes.palette = 'cat') +
+  tm_shape(pb_data %>% filter(Species==1)) + tm_dots(size=0.005) +
+  tm_shape(mex) + tm_borders()
+
+tm_shape(predictors[[3]]) + tm_raster()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ~ Process from eBird Best Practices ----
+# Summarize environmental data within a neighborhood of the point
+# PLAND from FRAGSTATS for land cover
+# Use 2.5 x 2.5 km neighborhood for birds
+
+# 1. get points, convert to sf, and project to match environmental data
+# 2. buffer points
+neighborhood_radius <- 5 * ceiling(max(res(landcover))) / 2
+ebird_buff <- ebird %>% 
+  distinct(year = format(observation_date, "%Y"),
+           locality_id, latitude, longitude) %>% 
+  # for 2019 use 2018 landcover data
+  mutate(year_lc = if_else(as.integer(year) > max_lc_year, 
+                           as.character(max_lc_year), year),
+         year_lc = paste0("y", year_lc)) %>% 
+  # convert to spatial features
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>% 
+  # transform to modis projection
+  st_transform(crs = projection(landcover)) %>% 
+  # buffer to create neighborhood around each point
+  st_buffer(dist = neighborhood_radius) %>% 
+  # nest by year
+  nest(data = c(year, locality_id, geometry))
+
+# 3. extract raster values within neighborhood and count cells in each landcover class
+# function to summarize landcover data for all checklists in a given year
+calculate_pland <- function(yr, regions, lc) {
+  locs <- st_set_geometry(regions, NULL)
+  exact_extract(lc[[yr]], regions, progress = FALSE) %>% 
+    map(~ count(., landcover = value)) %>% 
+    tibble(locs, data = .) %>% 
+    unnest(data)
 }
+# iterate over all years extracting landcover for all checklists in each
+lc_extract <- ebird_buff %>% 
+  mutate(pland = map2(year_lc, data, calculate_pland, lc = landcover)) %>% 
+  select(pland) %>% 
+  unnest(cols = pland)
 
-# Analysis ---------------------------------------------------------------------
+# 4. Calculate PLAND
+pland <- lc_extract %>% 
+  # calculate proporiton
+  group_by(locality_id, year) %>% 
+  mutate(pland = n / sum(n)) %>% 
+  ungroup() %>% 
+  select(-n) %>% 
+  # remove NAs after tallying so pland is relative to total number of cells
+  filter(!is.na(landcover))
 
-# Get GBIF data (previously process) and filter to one species
+# 5. Transform data wide format with var names from LC descriptions
+# convert names to be more descriptive
+lc_names <- tibble(landcover = 0:15,
+                   lc_name = c("pland_00_water", 
+                               "pland_01_evergreen_needleleaf", 
+                               "pland_02_evergreen_broadleaf", 
+                               "pland_03_deciduous_needleleaf", 
+                               "pland_04_deciduous_broadleaf", 
+                               "pland_05_mixed_forest",
+                               "pland_06_closed_shrubland", 
+                               "pland_07_open_shrubland", 
+                               "pland_08_woody_savanna", 
+                               "pland_09_savanna", 
+                               "pland_10_grassland", 
+                               "pland_11_wetland", 
+                               "pland_12_cropland", 
+                               "pland_13_urban", 
+                               "pland_14_mosiac", 
+                               "pland_15_barren"))
+pland <- pland %>% 
+  inner_join(lc_names, by = "landcover") %>% 
+  arrange(landcover) %>% 
+  select(-landcover)
+
+# tranform to wide format, filling in implicit missing values with 0s%>% 
+pland <- pland %>% 
+  pivot_wider(names_from = lc_name, 
+              values_from = pland, 
+              values_fill = list(pland = 0))
+
+# save
+write_csv(pland, "data/modis_pland_location-year.csv")
+
+# Convert landcover classes into percent of X landcover ----
+# 6. calculate PLAND metrics for all landcover raster
+# get cell centers and create neighborhoods
+r_centers <- rasterToPoints(r, spatial = TRUE) %>% 
+  st_as_sf() %>% 
+  transmute(id = row_number())
+r_cells <- st_buffer(r_centers, dist = neighborhood_radius)
+
+# extract landcover values within neighborhoods, only needed most recent year
+lc_extract_pred <- landcover[[paste0("y", max_lc_year)]] %>% 
+  exact_extract(r_cells, progress = FALSE) %>% 
+  map(~ count(., landcover = value)) %>% 
+  tibble(id = r_cells$id, data = .) %>% 
+  unnest(data)
+
+# calculate the percent for each landcover class
+pland_pred <- lc_extract_pred %>% 
+  count(id, landcover) %>% 
+  group_by(id) %>% 
+  mutate(pland = n / sum(n)) %>% 
+  ungroup() %>% 
+  select(-n) %>% 
+  # remove NAs after tallying so pland is relative to total number of cells
+  filter(!is.na(landcover))
+
+# convert names to be more descriptive
+pland_pred <- pland_pred %>% 
+  inner_join(lc_names, by = "landcover") %>% 
+  arrange(landcover) %>% 
+  select(-landcover)
+
+# tranform to wide format, filling in implicit missing values with 0s
+pland_pred <- pland_pred %>% 
+  pivot_wider(names_from = lc_name, 
+              values_from = pland, 
+              values_fill = list(pland = 0)) %>% 
+  mutate(year = max_lc_year) %>% 
+  select(id, year, everything())
+
+# join in coordinates
+pland_coords <- st_transform(r_centers, crs = 4326) %>% 
+  st_coordinates() %>% 
+  as.data.frame() %>% 
+  cbind(id = r_centers$id, .) %>% 
+  rename(longitude = X, latitude = Y) %>% 
+  inner_join(pland_pred, by = "id")
+
+# For continuous covariates, calculate the mean, median, and SD within each neighborhood.
+
+# Model occupancy probability (encounter rate) ----
+library(sf)
+library(raster)
+library(dggridR)
+library(lubridate)
+library(ranger)
+library(scam)
+library(PresenceAbsence)
+library(verification)
+library(ebirdst)
+library(fields)
+library(gridExtra)
+library(tidyverse)
+# resolve namespace conflicts
+select <- dplyr::select
+map <- purrr::map
+projection <- raster::projection
+
+
+
+
+
+# generate hexagonal grid with ~ 5 km betweeen cells
+dggs <- dgconstruct(spacing = 5)
+# get hexagonal cell id and week number for each checklist
+checklist_cell <- ebird_habitat %>% 
+  mutate(cell = dgGEO_to_SEQNUM(dggs, longitude, latitude)$seqnum)
+# sample one checklist per grid cell per week
+# sample detection/non-detection independently 
+ebird_ss <- checklist_cell %>% 
+  group_by(species_observed, cell) %>% 
+  sample_n(size = 1) %>% 
+  ungroup()
+
+
+
+# OLD Get GBIF data (previously process) and filter to one species ----
 df <- readRDS('data/data_out/r_data/gbif_pol_points.rds')
 sp <- 'Apis mellifera'
 df_sp <- df %>% 
