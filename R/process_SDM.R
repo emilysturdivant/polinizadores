@@ -15,6 +15,65 @@ library(tidyverse)
 library(tmap)
 tmap_mode('view')
 
+# Functions to create maps with tmap ----
+get_biggest_groups <- function(df, rank, facets){
+  
+  # Get list of most numerous groups at given taxonomic rank
+  grps_list <- df %>% 
+    st_set_geometry(NULL) %>% 
+    group_by(.data[[rank]]) %>% 
+    summarise(cnt = length(.data[[rank]])) %>% 
+    arrange(desc(cnt)) %>% 
+    slice(1:facets) %>% 
+    select(.data[[rank]]) %>% 
+    deframe
+  
+  # Filter df to the list
+  df %>% filter(.data[[rank]] %in% grps_list)
+}
+
+map_pts_taxon_facets <- function(df, name, rank='species', facets=25, fig_dir=NA){
+  # Subset to top taxa
+  df_sub <- df %>% get_biggest_groups(rank, facets)
+  
+  # Get mexico boundary
+  mex <- raster::getData('GADM', country='MEX', level=0, 
+                         path='data/input_data/context_Mexico') %>% 
+    st_as_sf(crs=4326) 
+  
+  if('nocturna' %in% colnames(df_sub)){
+    # Map
+    tm <- tm_shape(mex) +
+      tm_borders(col='darkgray') + 
+      tm_shape(df_sub) +
+      tm_dots(alpha=0.4, size=.1,
+              col = 'nocturna', palette=c('#b10026', '#0c2c84'),
+              legend.show=F) +
+      tm_facets(by = rank, free.coords=F)
+  } else {
+    # Map
+    tm <- tm_shape(mex) +
+      tm_borders(col='darkgray') + 
+      tm_shape(df_sub) +
+      tm_dots(alpha=0.4, size=.1, col = '#b10026') +
+      tm_facets(by = rank, free.coords=F)
+  }
+  
+  if(!is.na(fig_dir)){
+    if(dir.exists(fig_dir)){
+      # Save
+      fp_out <- file.path(fig_dir, 
+                          str_c('pol_', name, '_map_', rank, '_', facets, '.png'))
+      tmap_save(tm, filename = fp_out)
+      
+      print(str_c('Saved figure ', fp_out))
+    }
+  }
+  
+  # Return
+  return(tm)
+}
+
 # Initialize -----
 # Mexico
 # mex_fp <- 'data/input_data/context_Mexico/SNIB_divisionpolitica/dest2018gw/dest2018gw.shp'
@@ -22,7 +81,7 @@ tmap_mode('view')
 # mex <- st_read(mex_fp) %>% 
 #   st_transform(crs=crs) %>% 
 #   st_simplify(dTolerance=40, preserveTopology=T) 
-mex <- getData('GADM', country='MEX', level=0,
+mex <- getData('GADM', country='MEX', level=1,
                path='data/input_data/context_Mexico') %>% 
   st_as_sf()
 crop_dir <- file.path('data', 'input_data', 'environment_variables', 'cropped')
@@ -44,35 +103,85 @@ pred <- predictors[[- which(names(predictors) %in% drop_lst) ]]
 ext <- extent(mex)
 
 # Load pollinator points ----
-pol_group <- 'Abejas'
-sp <- 'Apis mellifera'
-
-# Load pollinator file
 pol_dir <- 'data/data_out/pollinator_points/with_duplicates'
 pol_fp <- file.path(pol_dir, str_c(pol_group, '.gpkg'))
+pol_df1 <- st_read(pol_fp)
 
-# Dates
-date_min <- as.POSIXct(str_c(date_range[[1]], "-01-01"))
-date_max <- as.POSIXct(str_c(date_range[[2]], "-12-31"))
+# Optionally filter to date range
+if(filt_dates) {
+  # Dates
+  date_min <- as.POSIXct(str_c(date_range[[1]], "-01-01"))
+  date_max <- as.POSIXct(str_c(date_range[[2]], "-12-31"))
+  
+  pol_df1 <- pol_df1 %>% 
+    filter(eventDate >= date_min & eventDate <= date_max)
+}
 
-# Load and filter to date range
-pol_df1 <- st_read(pol_fp) %>% 
-  filter(eventDate >= date_min & eventDate <= date_max) %>% 
+pol_df1 <- pol_df1 %>% 
   st_transform(st_crs(predictors)) %>% 
   select(species)
 
+# Remove species with less than 25 observations (based on Koch et al. 2017)
+pol_df2 <- pol_df1 %>% 
+  group_by(species) %>% 
+  filter(n() > 24) %>% 
+  ungroup()
+
+pol_df1 %>% distinct(species) %>% nrow
+pol_df2 %>% distinct(species) %>% nrow
+
+# ~ Standard random forest (from R-Spatial https://rspatial.org/raster/sdm) ----
+sp_list <- info_abejas %>% distinct(Especie) %>% deframe
+pol_group <- 'Abejas'
+sp_name <- str_subset(sp_list, 'Bom')[[2]]
+unq_cells = FALSE
+filt_dates = FALSE
+
+# FOR LOOP ----
+eval_tbl <- tibble(species=character(),
+                   N_unq_pts=integer(),
+                   N_unq_cells=integer(),
+                   np=integer(), 
+                   na=integer(), 
+                   auc=double(),
+                   cor=double(), pcor=double(), 
+                   spec_sens=double())
+
+for(sp_name in sp_list) {
+print(sp_name)
+sp_nospc <- str_replace(sp_name, ' ', '_')
+
+# directory paths
+unq_code <- ifelse(unq_cells, 'unq_cells', 'unq_pts')
+datefilt_code <- ifelse(filt_dates, '2000to2020', 'alldates')
+
+pred_dir <- file.path('data', 'data_out', 'sdm', 
+                      str_c(unq_code, '_', datefilt_code), 'rf1', pol_group)
+rf_fig_dir <- file.path('figures', 'sdm', 
+                        str_c(unq_code, '_', datefilt_code), 'rf1', pol_group)
+
+if(file.exists(file.path(pred_dir, 'likelihood', str_c(sp_nospc, '.tif')))){
+  print('Prediction map already created.')
+  next
+}
+
+# Filter to species
 sp_df <- pol_df1 %>% 
-  filter(species == sp)
+  filter(species == sp_name)
+
+if(nrow(sp_df) < 1) {
+  print('No rows for the given species.')
+  next
+}
 
 # Map
-tm <- tm_shape(mex) +
-  tm_borders(col='darkgray') + 
-  tm_shape(sp_df) +
-  tm_dots(alpha=0.4, size=.1, col = '#b10026')
+# tm <- tm_shape(mex) +
+#   tm_borders(col='darkgray') + 
+#   tm_shape(sp_df) +
+#   tm_dots(alpha=0.4, size=.1, col = '#b10026')
+# 
+# (tm_spec <- map_pts_taxon_facets(sp_df, rank='species', name=name, facets=1))
 
-tm_spec <- map_pts_taxon_facets(sp_df, rank='species', name=name, facets=1)
-
-# ~Standard random forest (from R-Spatial https://rspatial.org/raster/sdm) ----
 # Presence points ----
 # Filter to species and convert to coords DF
 sp1 <- sp_df %>% 
@@ -114,9 +223,12 @@ envtrain1 <- data.frame( cbind(pa = pb_train, envtrain1) ) %>%
   mutate(across(starts_with(c('biomes', 'ESA', 'usv')), as.factor)) %>% 
   select(-ID)
 
-# envtrain <- envtrain1 %>% select(-cells)
 # Remove duplicated cells
-envtrain <- envtrain1 %>% distinct() %>% select(-cells)
+if(unq_cells == T) {
+  envtrain1 <- envtrain1 %>% distinct()
+}
+
+envtrain <- envtrain1 %>% select(-cells)
 
 # Testing datasets - get predictors for test presence and background points
 testpres <- data.frame( raster::extract(pred, test_1) ) %>%
@@ -139,32 +251,150 @@ rf1 <- randomForest::randomForest(
   na.action = na.exclude,
   importance=T)
 
-# View importance of each variable
-par(mfrow=c(1,1))
-randomForest::importance(rf1, type=1)
-randomForest::varImpPlot(rf1, type=1)
+saveRDS(rf1, file.path(pred_dir, 'models', str_c(sp_nospc, '.rds')))
+
+# Evaluate model ----
+# Variable importance
+var_imp <- randomForest::importance(rf1, type=1)
 
 # Evaluate model with test data
 erf <- dismo::evaluate(testpres, testbackg, rf1)
-erf
-plot(erf, 'ROC')
-plot(erf, 'TPR')
+# plot(erf, 'ROC')
+# plot(erf, 'TPR')
+
+spc_eval <- tibble(
+  species=sp_name,
+  N_unq_pts=nrow(sp_df),
+  N_unq_cells=nrow(filter(envtrain, pa == 1)),
+  np=erf@np, na=erf@na, auc=erf@auc,
+  cor=erf@cor, pcor=erf@pcor, 
+  spec_sens=threshold(erf, "spec_sens"))
+
+spc_eval %>% write_csv(file.path(pred_dir, 'model_evals', str_c(sp_nospc, '.csv')))
+
+eval_tbl <- eval_tbl %>% add_row(spc_eval)
+
+
+# Save plot
+# eval <- str_c(str_glue('N presences: {erf@np}'),
+#               str_glue('N absences: {erf@na}'),
+#               str_glue('AUC: {format(erf@auc, digits=2)}'),
+#               str_glue('Correlation coefficient: {format(erf@cor, digits=2)}'),
+#               str_glue('Cor p-value: {format(erf@pcor, digits=2)}'),
+#               str_glue('Max TPR+TNR at: {threshold(erf, "spec_sens")}'),
+#               sep='\n'
+# )
+plot_fp <- file.path(rf_fig_dir, 'var_importance', str_c(sp_nospc, '.png'))
+png(plot_fp)
+randomForest::varImpPlot(rf1, type=1, sort=F, 
+                         main=sp_name,
+                         pt.cex=1,
+                         bg='black')
+# text(x=-35, y=20, eval, adj=c(0))
+dev.off()
 
 # Map suitability prediction as continuous and presence/absence ----
+# Create map and interpolate to fill holes
 pr_rf1 <- dismo::predict(predictors, rf1, ext=ext)
-pr_rf1 <- raster::focal(pr_rf1, w=matrix(1,nrow=3, ncol=3), fun=mean, NAonly=TRUE, na.rm=TRUE) 
+pr_rf1 <- raster::focal(pr_rf1, 
+                        w=matrix(1,nrow=3, ncol=3), 
+                        fun=mean, 
+                        NAonly=TRUE, 
+                        na.rm=TRUE) 
 
-(tr <- threshold(erf, 'prevalence'))
-(tr <- threshold(erf, 'spec_sens'))
-tr <- 0.5
-plot(pr_rf1 > tr, main='presence/absence')
+# Save likelihood raster
+fp_out <- file.path(pred_dir, 'likelihood', str_glue(sp_nospc, '.tif'))
+writeRaster(pr_rf1, fp_out, options=c("dstnodata=-99999"), wopt=list(gdal='COMPRESS=LZW'))
 
-tmap_mode('plot')
-tm_shape(pr_rf1) + tm_raster(palette = 'viridis', title=sp, legend.reverse = T) +
-  tm_shape(mex) + tm_borders() +
-  tm_layout(legend.position=c('right', 'top'))
+# Apply threshold from max TPR+TNR and save
+tr <- threshold(erf, 'spec_sens')
+pa_rf1 <- pr_rf1 > tr
+fp_out <- file.path(pred_dir, 'binned_spec_sens', str_glue(sp_nospc, '.tif'))
+writeRaster(pa_rf1, fp_out, options=c("dstnodata=-99999"), wopt=list(gdal='COMPRESS=LZW'))
 
-tm_shape(pred[[22]]) + tm_raster(palette = 'viridis')
+# Make plots ----
+# tmap_mode('plot')
+# 
+# # Plot likelihood
+# map_prob <- tm_shape(pr_rf1) + tm_raster(palette = 'viridis', title=sp_name, 
+#                              legend.reverse = T) +
+#   tm_shape(mex) + tm_borders(col='white', alpha=0.3) +
+#   tm_layout(legend.position=c('right', 'top'))
+# 
+# # Save figure
+# plot_fp <- file.path(rf_fig_dir, 'map_predictions',
+#                      str_c(sp_nospc, '_likelihood', '.png'))
+# tmap_save(map_prob, plot_fp, width=6)
+
+# ggplot ----
+# Plot likelihood 
+pr_rf1_stars <- st_as_stars(pr_rf1) 
+ggplot() +
+  geom_stars(data=pr_rf1_stars) +
+  geom_sf(data = mex, fill = "transparent", size = 0.2, color = "black") +
+  colormap::scale_fill_colormap("Occupancy\nlikelihood", na.value = "transparent", 
+                                colormap = colormap::colormaps$viridis) +
+  ggthemes::theme_hc() +
+  theme(legend.position=c(.95, 1), legend.title.align=0, legend.justification = c(1,1)) +
+  labs(x = NULL, y = NULL)
+
+# Save
+plot_fp <- file.path(rf_fig_dir, 'map_predictions',
+                     str_c(sp_nospc, '_likelihood.png'))
+ggsave(plot_fp, width=9, height=5.7, dpi=120)
+
+# Plot presence with ggplot
+# Convert binary map to stars object
+pa_rf1_stars <- pr_rf1 %>%
+  st_as_stars() %>% 
+  mutate(presence = case_when(layer > tr ~ 1, TRUE ~ as.numeric(NA))) %>%
+  select(presence)
+# Plot
+ggplot() +
+  geom_stars(data=pa_rf1_stars) +
+  geom_sf(data = mex, fill = "transparent", size = 0.2, color = "black") +
+  colormap::scale_fill_colormap("likely present", na.value = "transparent", 
+                                colormap = colormap::colormaps$viridis) +
+  ggthemes::theme_hc() +
+  theme(legend.position='none') +
+  labs(x = NULL, y = NULL) +
+  annotate(geom='text', y=Inf, x=Inf, label = str_glue("\n{sp_name}  \nlikely present  "),
+           vjust=1, hjust=1)
+
+# Save
+plot_fp <- file.path(rf_fig_dir, 'map_predictions',
+                     str_c(sp_nospc, '_bin_specsens.png'))
+ggsave(plot_fp, width=9, height=5.7, dpi=120)
+}
+
+# TESTING - More thorough map ----
+divpol <- rnaturalearth::ne_download(scale = "large", type = "countries", returnclass = "sf")
+northam <- divpol %>%
+  filter(stringr::str_detect(SOVEREIGNT, "United States of America|Mexico")) %>%
+  filter(SUBREGION == "Northern America") %>%
+  select(SOVEREIGNT)
+limsmex <- st_buffer(st_as_sfc(st_bbox(mex)), 10000)
+
+ggplot(northam) +
+  geom_sf(fill = "#353535", color = "transparent") +
+  geom_stars(data = pr_rf1_stars) +
+  geom_sf(data = mex, fill = "transparent", size = 0.2, color = "black") +
+  colormap::scale_fill_colormap("Habitat Suitability", na.value = "transparent", 
+                                colormap = colormap::colormaps$portland) +
+  ggthemes::theme_hc() +
+  labs(x = "", y = "") +
+  coord_sf(
+    xlim = c(limsmex["xmin"], limsmex["xmax"]),
+    ylim = c(limsmex["ymin"], limsmex["ymax"])
+  ) +
+  theme(
+    panel.background = element_rect(fill = "#577399"),
+    panel.border = element_rect(colour = "black", fill = "transparent"),
+    legend.position = "bottom",
+    panel.grid = element_line(size = 0.08)
+  ) +
+  coord_sf() +
+  facet_wrap(~sp, nrow = 2)
 
 # ~ blockCV ----
 # browseVignettes('blockCV') 

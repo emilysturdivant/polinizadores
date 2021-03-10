@@ -93,3 +93,39 @@ sf_df2 <- df %>%
 fp_out <- file.path('data/data_out/pollinator_points/no_duplicates',
                     str_c(name, '.gpkg'))
 sf_df2 %>% st_write(fp_out, delete_dsn=T)
+
+# Get list of unique species and join to species in Informacion_general ----
+pol_group <- 'Abejas'
+
+# Load pollinator file
+pol_dir <- 'data/data_out/pollinator_points/with_duplicates'
+pol_fp <- file.path(pol_dir, str_c(pol_group, '.gpkg'))
+
+# get list of species and match to those in Quesada table
+sp_df <- st_read(pol_fp) 
+
+sp_lst <- sp_df %>% 
+  st_drop_geometry() %>% 
+  distinct(species, genus, family, order)
+
+distinct(sp_lst, family)
+
+# Read Informacion_general
+infogen <- readxl::read_excel('data/input_data/Quesada_bioclim_pol_y_cultivos/Informacion_general.xlsx', 
+                              'Polinizadores', skip=1)
+
+# Get bee species
+info_abejas <- infogen %>% filter(Orden == 'Hymenoptera')
+info_sin <- info_abejas %>% 
+  filter(!is.na(Sinonimias)) %>% 
+  mutate(Especie = Sinonimias)
+info_abejas <- bind_rows(info_abejas, info_sin)
+semi_join(info_abejas, sp_lst, by=c(Especie='species'))
+anti_join(info_abejas, sp_lst, by=c(Especie='species'))
+
+sp_lst <- left_join(sp_lst, 
+                    select(info_abejas, Especie, ID_numerico, ID_código), 
+                    by=c(species='Especie'))
+sp_lst %>% arrange(ID_código) %>% 
+  write_csv('data/input_data/Quesada_bioclim_pol_y_cultivos/intermediate/Abejas_especies_unicas.csv',
+            na='')
