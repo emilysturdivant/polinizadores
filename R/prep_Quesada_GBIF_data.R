@@ -120,6 +120,15 @@ info_sin <- info_abejas %>%
   filter(!is.na(Sinonimias)) %>% 
   mutate(Especie = Sinonimias)
 info_abejas <- bind_rows(info_abejas, info_sin)
+
+# Get bee species
+info_abejas <- infogen %>% filter(Orden == 'Hymenoptera')
+info_sin <- info_abejas %>% 
+  filter(!is.na(Sinonimias)) %>% 
+  mutate(Especie = Sinonimias)
+info_abejas <- bind_rows(info_abejas, info_sin)
+
+# Check matches
 semi_join(info_abejas, sp_lst, by=c(Especie='species'))
 anti_join(info_abejas, sp_lst, by=c(Especie='species'))
 

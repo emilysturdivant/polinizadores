@@ -10,6 +10,7 @@ box::use(units[set_units])
 library(randomForest)
 library(tree)
 
+# ~ from pollinator points ----
 # Load diversity DF (singlepart) ----
 buffer_distance <- set_units(10, 'km')
 div_single_fp <- here::here("data", "data_out", "diversity_by_zones", 
@@ -213,3 +214,47 @@ div_df2 <- div_df1 %>%
 model <- lm(rich_by_1kkm ~ tipo, data=div_df2)
 summary(model)
 car::Anova(model)
+
+# ~ from richness stacked SDMs ----
+unq_cells = TRUE
+mutually_exclusive_pa = TRUE
+filt_dates = FALSE
+pol_group <- 'Abejas'
+nspecies <- 165
+buffer_distance <- 10
+
+# directory paths
+unq_code <- ifelse(unq_cells, 'unq_cells', 'unq_pts')
+unq_code <- ifelse(mutually_exclusive_pa, 'unq_cells_exclusive', unq_code)
+datefilt_code <- ifelse(filt_dates, '2000to2020', 'alldates')
+
+fp_tail <- file.path('sdm', str_c(unq_code, '_', datefilt_code), 'rf1', pol_group)
+pred_dir <- file.path('data', 'data_out', fp_tail)
+
+# Load
+fn <- str_glue('Likhd_rich_{pol_group}_{filt_dates}_{nlayers(pol_stack)}species')
+rich_tif_fp <- file.path(pred_dir, str_glue('{fn}.tif'))
+rich_ras <- raster(rich_tif_fp)
+
+# Check spatial autocorrelation
+install.packages('usdm')
+v1 <- usdm::Variogram(rich_ras, size=5000)
+plot(v1)
+
+# Extract average values by zone
+
+# Zonal statistics using raster::extract
+#read-in the polygon shapefile
+bind_fp <- str_c('data/data_out/ANPs/ANPs_allzones_buff', 
+                 buffer_distance,'km.gpkg')
+polys <- st_read(bind_fp) %>% as_Spatial()
+ex <- extract(rich_ras, polys, fun=median, na.rm=TRUE, df=TRUE)
+
+# Zonal statistics using spatialEco::zonal.stats
+zonal.stats(polys, rich_ras, stats='median')
+
+
+
+
+
+
