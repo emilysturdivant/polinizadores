@@ -1,0 +1,157 @@
+---
+title: "explore_richness_stats"
+output: html_document
+output_file: "test.html"
+date: 2021-03-22
+editor_options: 
+  chunk_output_type: console
+params:
+  unq_cells: TRUE
+  mutually_exclusive_pa: TRUE
+  filt_dates: FALSE
+  nspecies: 15
+  buffer_distance: 10
+  rich_code: 'Likhd'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+## Load libraries and initialize variables
+
+```{r initialize, collapse=TRUE, message=FALSE}
+library(tidyverse)
+box::use(here[here])
+box::use(units[set_units])
+library(randomForest)
+library(tree)
+
+# Parameters
+rich_code <- params$rich_code
+
+sessionInfo()
+```
+
+## Extract zonal stats
+
+```{r, collapse=TRUE, eval=TRUE}
+# directory paths
+unq_code <- ifelse(params$mutually_exclusive_pa, 'unq_cells_exclusive', unq_code)
+datefilt_code <- ifelse(params$filt_dates, '2000to2020', 'alldates')
+bind_fn <- str_c('ANPs_allzones_buff', params$buffer_distance,'km')
+bind_fp <- here::here('data', 'data_out', 'ANPs', str_c(bind_fn, '.gpkg'))
+
+for(pol_group in c('Abejas', 'Colibries', 'Mariposas')){
+  # directory paths
+  fp_tail <- file.path('sdm', str_c(unq_code, '_', datefilt_code), 'rf1', pol_group)
+  pred_dir <- here::here('data', 'data_out', fp_tail)
+  
+  # File paths
+  fn <- str_glue('{rich_code}_rich_{pol_group}_{datefilt_code}_{params$nspecies}species')
+  rich_tif_fp <- here::here(pred_dir, str_glue('{fn}.tif'))
+  div_dir <- here::here('data', 'data_out', 'diversity_by_zones', 
+                          'from_richness', bind_fn)
+  div_df_fp <- file.path(div_dir, str_c(fn, '.csv'))
+
+  if(!file.exists(div_df_fp)){
+    # Load raster
+    rich_ras <- raster::raster(rich_tif_fp)
+    
+    # Load polygons
+    polys <- sf::st_read(bind_fp) 
+    polys_sp <- sf::as_Spatial(polys)
+    
+    # Zonal statistics
+    zon <- spatialEco::zonal.stats(polys_sp, rich_ras, stats=c('mean', 'median'))
+    names(zon) <- c('mean', 'median')
+    
+    div_df <- tibble(polys_sp@data) %>% 
+      bind_cols(zon) %>% 
+      mutate(zone = as.factor(zone),
+             pol_group = pol_group) %>% 
+      pivot_longer(cols=any_of(c('mean', 'median')), names_to='stat', values_to='richness')
+    
+    # Save DF
+    dir.create(dirname(div_df_fp), recursive=T, showWarnings = F)
+    div_df %>% write_csv(div_df_fp)
+  }
+}
+
+# Load DFs and row bind
+(fps <- list.files(div_dir, pattern='csv$', full.name=T) %>% 
+    str_subset(str_glue('{rich_code}.*{datefilt_code}')))
+div_df <- fps %>% purrr::map_dfr(read_csv, col_types='ccdfffd') 
+```
+
+## Plots
+### Histograms
+
+```{r histograms, echo=TRUE, collapse=TRUE}
+div_df %>%
+  filter(stat == 'median') %>% 
+  ggplot(., aes(x=richness, fill=zone)) +
+  geom_histogram() +
+  theme(legend.position = 'none') +
+  facet_grid(rows=vars(zone), cols=vars(pol_group), scales = 'free_x')
+```
+
+### Boxplots
+
+```{r boxplots, echo=TRUE, collapse=TRUE}
+div_df %>% 
+  filter(stat == 'median') %>% 
+  ggplot(., aes(x=richness, fill=zone, y=zone)) +
+  geom_boxplot() +
+  theme(legend.position = 'none')  +
+  labs(y=NULL) +
+  facet_wrap(facets=vars(pol_group), nrow=3, scales = 'free_x')
+```
+
+## Check for significant differences in groups
+### Abejas
+
+```{r compare abejas, echo=TRUE}
+abejas_df <- div_df %>% filter(pol_group == 'Abejas', stat=='median')
+m <- lm(richness ~ zone, data = abejas_df)
+g <- multcomp::glht(m, linfct = multcomp::mcp(zone = "Tukey"))
+summary(g, test = multcomp::adjusted("holm"))
+# 
+# abejas_df %>% 
+#   ggplot(., aes(x=richness, fill=zone, y=zone)) +
+#   geom_boxplot() +
+#   theme(legend.position = 'none')  +
+#   labs(y=NULL) 
+```
+
+### Colibries
+
+```{r compare colibries, echo=TRUE}
+clbri_df <- div_df %>% filter(pol_group == 'Colibries', stat=='median')
+m <- lm(richness ~ zone, data = clbri_df)
+g <- multcomp::glht(m, linfct = multcomp::mcp(zone = "Tukey"))
+summary(g, test = multcomp::adjusted("holm"))
+```
+
+### Mariposas
+
+```{r compare mariposas, echo=TRUE}
+mrpsa_df <- div_df %>% filter(pol_group == 'Mariposas', stat=='median')
+m <- lm(richness ~ zone, data = mrpsa_df)
+g <- multcomp::glht(m, linfct = multcomp::mcp(zone = "Tukey"))
+summary(g, test = multcomp::adjusted("holm"))
+```
+
+## Other methods, in progress
+
+```{r testing, eval=FALSE}
+# Zonal statistics using raster::extract
+ex <- raster::extract(rich_ras, polys, fun=median, na.rm=TRUE, df=TRUE)
+
+# Compute mean AGB for each LC (zonal statistics) 
+rich_ras <- terra::rast(rich_tif_fp)
+polys_ras <- polys %>% to_raster()
+zonal_stats <- terra::zonal(rich_ras, polys, 'median', na.rm=T)
+```
+

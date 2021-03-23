@@ -932,7 +932,8 @@ for(biom_zone_fp in fps) {
 # Combine divesity DFs into one ----
 fps <- list.files(path="data/data_out/diversity_by_zones",
                   pattern=str_c('div_ANPs_usv3_[^singlepart].+_buff', 
-                                buffer_distance, 'km.csv'))
+                                buffer_distance, 'km.csv'), 
+                  full.names = T)
 div_df <- map_dfr(fps, read_csv)
 
 # Plot

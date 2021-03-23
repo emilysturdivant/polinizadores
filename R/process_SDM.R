@@ -39,9 +39,9 @@ ext <- extent(mex)
 # ~ Standard random forest (from R-Spatial https://rspatial.org/raster/sdm) ----
 unq_cells = TRUE
 mutually_exclusive_pa = TRUE
-filt_dates = TRUE
+filt_dates = FALSE
 pol_group <- 'Mariposas'
-nspecies <- 100
+nspecies <- 15
 
 # directory paths
 unq_code <- ifelse(unq_cells, 'unq_cells', 'unq_pts')
@@ -55,13 +55,13 @@ dir.create(pred_dir, recursive=T, showWarnings = F)
 dir.create(rf_fig_dir, recursive=T, showWarnings = F)
 
 # Rename files to include pollinator name
-fps <- list.files(pred_dir, 'tif$', full.name=T)
+(fps <- list.files(pred_dir, 'tif$', full.name=T))
 (pol_name <- basename(pred_dir))
 (date_filt <- str_extract(pred_dir, '2000to2020|alldates'))
 (new_fps <- fps %>% str_replace('richness_', str_glue('rich_{pol_name}_{date_filt}_')))
 file.rename(fps, new_fps)
 
-fps <- list.files(rf_fig_dir, 'png$', full.name=T)
+(fps <- list.files(rf_fig_dir, 'png$', full.name=T))
 (pol_name <- basename(rf_fig_dir))
 (date_filt <- str_extract(rf_fig_dir, '2000to2020|alldates'))
 (new_fps <- fps %>% str_replace('richness_', str_glue('rich_{pol_name}_{date_filt}_')))
