@@ -8,7 +8,7 @@ editor_options:
 params:
   unq_cells: TRUE
   mutually_exclusive_pa: TRUE
-  filt_dates: FALSE
+  filt_dates: TRUE
   nspecies: 15
   buffer_distance: 10
   rich_code: 'Likhd'
@@ -21,12 +21,17 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## Load libraries and initialize variables
 
-```{r initialize, collapse=TRUE, message=FALSE}
+#### Parameters
+
+rich_code: `params$rich_code`
+unq_cells: `params$unq_cells`
+mutually_exclusive_pa: `params$mutually_exclusive_pa`
+filt_dates: `params$filt_dates`
+nspecies: `params$nspecies`
+buffer_distance: `params$buffer_distance` km
+
+```{r initialize, message=FALSE}
 library(tidyverse)
-box::use(here[here])
-box::use(units[set_units])
-library(randomForest)
-library(tree)
 
 # Parameters
 rich_code <- params$rich_code

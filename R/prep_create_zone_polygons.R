@@ -929,7 +929,7 @@ for(biom_zone_fp in fps) {
 # mdsB <- vegan::metaMDS(spec_df2, distance="bray", autotransform=FALSE, trace=0)
 # plot(mdsB, display="sites", type="text")
 
-# Combine divesity DFs into one ----
+# Combine diversity DFs into one ----
 fps <- list.files(path="data/data_out/diversity_by_zones",
                   pattern=str_c('div_ANPs_usv3_[^singlepart].+_buff', 
                                 buffer_distance, 'km.csv'), 
