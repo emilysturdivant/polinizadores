@@ -1,38 +1,26 @@
 ---
 title: "Richness by combined zones"
-output: html_document
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
 date: 2021-03-23
 editor_options: 
   chunk_output_type: console
-params:
-  unq_cells: TRUE
-  mutually_exclusive_pa: TRUE
-  filt_dates: FALSE
-  nspecies: 15
-  buffer_distance: 10
-  rich_code: 'Likhd'
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, 
+                      fig.align = 'center',
+                      fig.height=8, 
+                      fig.width=7, 
+                      message=FALSE, 
+                      warning=FALSE, 
+                      cache=TRUE)
 
 ```
 
-## Load libraries and initialize variables
-
-#### Parameters
-
-rich_code: `params$rich_code`
-
-unq_cells: `params$unq_cells`
-
-mutually_exclusive_pa: `params$mutually_exclusive_pa`
-
-filt_dates: `params$filt_dates`
-
-nspecies: `params$nspecies`
-
-buffer_distance: `params$buffer_distance` km
+### Load libraries and initialize variables
 
 ```{r initialize, message=FALSE}
 library(tidyverse)
@@ -41,26 +29,50 @@ library(rcompanion)
 # sessionInfo()
 
 # # Parameters (when running without knitting)
-# params <- list(
-#   unq_cells = TRUE,
-#   mutually_exclusive_pa = TRUE,
-#   filt_dates = FALSE,
-#   nspecies = 15,
-#   buffer_distance = 10,
-#   rich_code = 'Likhd')
+# To knit from console and programmatically specify parameters: rmarkdown::render(here::here('R', 'notebooks', 'richness_combined_zones', 'richness_by_combined_zones.Rmd'), params=params, output_file='richness_study.html')
+if(!exists('params')){
+  params <- list(
+    unq_cells = TRUE,
+    mutually_exclusive_pa = TRUE,
+    filt_dates = FALSE,
+    nspecies = 15,
+    buffer_distance = 10,
+    rich_code = 'Likhd',
+    samp_n = 350)
+}
+
+# Filepath codes based on parameters
+unq_code <- ifelse(params$mutually_exclusive_pa, 'unq_cells_exclusive', unq_code)
+dfilt_code <- ifelse(params$filt_dates, '2000to2020', 'alldates')
 
 # Directory paths
+dat_dir <- here::here('data', 'data_out')
+
+# Directory of richness tifs (predicted)
+pred_dir <- file.path(dat_dir, 'sdm', str_c(unq_code, '_', dfilt_code), 'rf1')
+
+# Zones raster and lookup table
 zones_fn <- 'stack_anps3_biomes7_usv3'
-zone_polys_dir <- here::here('data', 'data_out', 'zone_polys')
+zone_polys_dir <- file.path(dat_dir, 'zone_polys')
 zones_ras_fp <- file.path(zone_polys_dir, str_c(zones_fn, '.tif'))
 zones_lu_fp <- file.path(zone_polys_dir, str_c(zones_fn, '_lu.rds'))
 
-# Directory paths
-unq_code <- ifelse(params$mutually_exclusive_pa, 'unq_cells_exclusive', unq_code)
-datefilt_code <- ifelse(params$filt_dates, '2000to2020', 'alldates')
+# Directory for richness dataframes
+div_dir <- file.path(dat_dir, 'diversity_by_zones', 'from_richness', zones_fn)
+dir.create(div_dir, recursive=TRUE, showWarnings = F)
 ```
 
-## Pre-process ANP, biome, and land use zones
+Parameters:
+
+* rich_code: **"`r params$rich_code`"**
+* unq_cells: **`r params$unq_cells`**
+* mutually_exclusive_pa: **`r params$mutually_exclusive_pa`**
+* filt_dates: **`r params$filt_dates`**
+* nspecies: **`r params$nspecies`**
+* buffer_distance: **`r params$buffer_distance` km**
+* samp_n: **`r params$samp_n`**
+
+### Pre-process ANP, biome, and land use zones
 
 ```{r pre-process, eval=TRUE}
 if(!file.exists(zones_ras_fp)){
@@ -71,12 +83,11 @@ if(!file.exists(zones_ras_fp)){
   usv_fn <- 'usv250s6gw_diss_3class.gpkg'
   usv_fp <- file.path(zone_polys_dir, usv_fn)
 
-   
   # Input pollinator richness 
   pol_group <- 'Abejas'
-  fp_tail <- file.path('sdm', str_c(unq_code, '_', datefilt_code), 'rf1', pol_group)
+  fp_tail <- file.path('sdm', str_c(unq_code, '_', dfilt_code), 'rf1', pol_group)
   pred_dir <- here::here('data', 'data_out', fp_tail)
-  rich_fn <- str_glue('{params$rich_code}_rich_{pol_group}_{datefilt_code}_{params$nspecies}species')
+  rich_fn <- str_glue('{params$rich_code}_rich_{pol_group}_{dfilt_code}_{params$nspecies}species')
   rich_tif_fp <- here::here(pred_dir, str_glue('{rich_fn}.tif'))
   rich_ras <- terra::rast(rich_tif_fp)
     
@@ -157,24 +168,18 @@ if(!file.exists(zones_ras_fp)){
 } 
 ```
 
-## Diversity data frames
+### Richness data frames
 
-Create dataframes with ANP zone, biome, land cover, and richness by pollinator group where each row is a pixel. 
+Convert rasters to dataframes of richness by ANP zone, biome, land cover, and pollinator group. 
 
 ```{r make div_df}
-# Output directory
-div_dir <- here::here('data', 'data_out', 'diversity_by_zones', 
-                      'from_richness', zones_fn)
-dir.create(div_dir, recursive=TRUE, showWarnings = F)
-
 # Load stacked zones
 combo_ras <- terra::rast(zones_ras_fp)
 lu <- readRDS(zones_lu_fp)
 
 # List richness tifs
-pred_dir <- here::here('data', 'data_out', 'sdm', 
-                       str_c(unq_code, '_', datefilt_code), 'rf1')
-tif_query <- str_glue('{params$rich_code}_rich_.*_{datefilt_code}_{params$nspecies}species.tif')
+tif_query <- str_glue(
+  '{params$rich_code}_rich_.*_{dfilt_code}_{params$nspecies}species.tif')
 fps <- list.files(pred_dir, pattern=tif_query, recursive=T, full.names=T)
 
 for(rich_tif_fp in fps){
@@ -202,12 +207,12 @@ for(rich_tif_fp in fps){
 }
 ```
 
-Combine into one dataframe. 
+Combine pollinator richness dataframes into one dataframe with all pollinators.
 
 ```{r}
 # Load DFs and row bind
-(fps <- list.files(div_dir, pattern='csv$', full.name=T) %>% 
-    str_subset(str_glue('/{params$rich_code}.*{datefilt_code}')))
+fps <- list.files(div_dir, pattern='csv$', full.name=T) %>% 
+    str_subset(str_glue('/{params$rich_code}.*{dfilt_code}'))
 div_df1 <- fps %>% purrr::map_dfr(read_csv, col_types='ifffdf')
 
 # Recode biome names
@@ -221,256 +226,19 @@ biom_codes <- setNames(biom_codes_all$code, biom_codes_all$id)
 div_df <- div_df1 %>% 
       mutate(anp_zone = recode(anp_zone, !!!lu$anp) %>% 
                factor(levels = c('Outside buffer', 'Buffer 10 km', 'Inside NPA')),
-             biome = recode(biome, !!!biom_codes) %>% factor(),
+             biome = recode(biome, !!!biom_codes) %>% 
+               factor(),
              usv = recode(usv, !!!lu$usv) %>% 
                factor(levels = c('veg', 'ag', 'otro')))
 
 ```
 
-## Compare richness by zones
-### Define function 
+### Compare richness by zones - ANP zones
 
-The function `get_grp_differences` evaluates the statistical significance of groups and return medians,  CIs, and significant groups for plotting. It will be applied to each group of pollinator, biome, and ANP zone. 
+The function `get_grp_diffs` evaluates the statistical significance of groups and returns medians, CIs, and significant groups for plotting. It will be applied to each group of pollinator, biome, and either ANP zone or land cover type.
 
-```{r}
-get_grp_differences <- function(df){
-  
-  # Check whether any groups are significantly different
-  kw <- kruskal.test(richness ~ usv, data = df) 
-  if(kw$p.value > 0.05) print('No significantly different groups')
-  
-  # Post-hoc test to compare groups
-  PT <- pairwise.wilcox.test(df$richness, df$usv, p.adjust.method = 'fdr')
-  PT = PT$p.value
-  PT1 = rcompanion::fullPTable(PT)
-  cld_list <- multcompView::multcompLetters(PT1,
-                compare="<",
-                threshold=0.05,  # p-value to use as significance threshold
-                Letters=letters,
-                reversed = FALSE)
-  cld <- tibble(Letter=cld_list$Letters, Group=names(cld_list$Letters))
-  
-  # Plot medians and confidence intervals
-  Sum = rcompanion::groupwiseMedian(richness ~ usv,
-                        data       = df,
-                        conf       = 0.95,
-                        R          = 5000,
-                        percentile = TRUE,
-                        bca        = FALSE,
-                        digits     = 3)
-  
-  # Join letter indicating significantly different groups to medians and CIs
-  sum1 <- tibble(Sum) %>% 
-    mutate(temp_zone = str_remove_all(usv, ' |0')) %>% 
-    left_join(select(tibble(cld), Group, Letter), by=c(temp_zone='Group')) %>% 
-    select(-temp_zone)
-  
-  return(sum1)
-}
-```
-### Sample DF
-
-```{r}
-# Stratified random sample
-samp_n <- 350
-fn <- str_c('samp', samp_n, '_USV_', params$rich_code, '_', 
-            datefilt_code, '_', params$nspecies, 'species_',
-            length(levels(div_df$pol_group)), 'pols.rds')
-samp_fp <- file.path(div_dir, fn)
-
-if(!file.exists(samp_fp)){
-  # Sample the same cells for all the pollinator groups
-  
-  # Get all usable cells
-  samp_idx <- div_df %>% 
-    filter(pol_group == 'Abejas') %>% 
-    group_by(anp_zone, biome, usv) %>%
-    filter(n() > samp_n)
-  
-  # Random sample stratified by group
-  set.seed(1)
-  samp_idx <- samp_idx %>% 
-    do(slice_sample(., n=samp_n)) %>%
-    ungroup
-  
-  df_samp <- div_df %>% filter(cell %in% samp_idx$cell)
-  
-  # Save
-  df_samp %>% saveRDS(samp_fp)
-  
-} else {
-  
-  df_samp <- readRDS(samp_fp)
-  
-}
-```
-
-### Get group differences (comparing by land cover)
-
-```{r}
-# File name
-fn <- str_c('grpdiffs_samp', samp_n, '_USV_', params$rich_code, '_', 
-            datefilt_code, '_', params$nspecies, 'species_',
-            length(levels(div_df$pol_group)), 'pols.rds')
-grp_diffs_fp <- file.path(div_dir, fn)
-
-if(!file.exists(grp_diffs_fp)){
-  
-  # Get group differences for each combination of biome and ANP zone
-  df_nest <- df_samp %>% group_by(pol_group, biome, anp_zone) %>% nest()
-  sum2 <- df_nest %>%
-    mutate(sum = purrr::map(data, get_grp_differences)) %>%
-    select(-data) %>% 
-    unnest(cols=sum)
-  
-  # Save 
-  sum2 %>% saveRDS(grp_diffs_fp)
-  
-} else {
-  
-  sum2 <- readRDS(grp_diffs_fp)
-  
-}
-```
-
-### Define plotting function to create facets biome x ANP zone with groups by USV
-
-```{r, echo=F}
-plot_pollin_facet <- function(df, pol_group,
-                              patch.position='inner', legend_on=FALSE){
-  
-  xmax <- max(df$Percentile.upper)
-  
-  p <- ggplot(df, aes(y = usv, x = Median, color=Letter)) +
-  
-    # shade facet by ANP zone
-    geom_rect(aes(xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf,
-                  fill=anp_zone), alpha=0.2, color='white') +
-    scale_fill_grey(name='ANP zone', start=0.1, end=0.9) +
-  
-    # plot CIs
-    geom_errorbar(aes(y = usv, x = Median, color=Letter,
-                      xmin = Percentile.lower, xmax = Percentile.upper),
-                   width = 0.1, size  = 0.5) +
-    
-    # plot medians
-     geom_point(aes(y = usv, x = Median, color=Letter), 
-                shape = 15, size  = 2) +
-     xlab("Median richness with 95% CI") +
-    
-    scale_color_manual(values=c('a'='salmon', 'ab'='#C77CFF', 'b'='#00BFC4', 
-                       'bc'='green', 'c'='goldenrod'), 
-                       name='Group',
-                       drop=FALSE) +
-      
-    scale_y_discrete(limits = c( 'otro', 'ag', 'veg')) +
-    scale_x_continuous(
-      breaks=scales::pretty_breaks(4),
-                       # breaks=scales::breaks_extended(4),
-                       # n.breaks=4,
-      limits = c(0, ceiling(xmax)+.2)
-      ) +
-  
-    # Facet by x=pollinator group, y = ANP zone
-    facet_grid(vars(anp_zone), vars(biome)) +
-    ggtitle(pol_group) +
-    theme_minimal() +
-    theme(axis.title.y = element_blank(), 
-      plot.title = element_text(size=rel(1), face='bold', hjust=0),
-      panel.spacing = unit(0.5, 'mm'),
-      panel.border=element_blank(),
-      panel.grid.major.y=element_blank(),
-      panel.grid.minor.x=element_blank(),
-      axis.ticks.y = element_blank(),
-      axis.text.x = element_text(margin = margin(t = .2, unit = "mm")),
-      strip.text.y = element_blank(),
-      strip.background = element_blank(),
-      strip.switch.pad.grid = unit(0.5, 'mm')
-      )
-  
-  if(patch.position != 'top'){
-    p <- p +
-      theme(
-        strip.text.x = element_blank()
-      )
-  } 
-  
-  if(patch.position != 'bottom'){
-    p <- p +
-      theme(
-        axis.title.x = element_blank()
-      )
-  }
-  
-  if(!legend_on){
-    p <- p + theme(
-      legend.position = 'none'
-    )
-  }
-  
-  return(p)
-  
-}
-```
-
-### Plot by biome x ANP zone
-
-```{r}
-pol_groups <- levels(sum2$pol_group)
-
-# Plot
-p1 <- sum2 %>% filter(pol_group == pol_groups[1]) %>% 
-  plot_pollin_facet(pol_groups[1], patch.position='top')
-p2 <- sum2 %>% filter(pol_group == pol_groups[2]) %>% 
-  plot_pollin_facet(pol_groups[2], legend_on=T)
-
-# Vary the plotting based on whether we're looking at 3 or 4 groups
-if(length(pol_groups) == 3){
-  
-  p3 <- sum2 %>% filter(pol_group == pol_groups[3]) %>% 
-  plot_pollin_facet(pol_groups[3], patch.position = 'bottom')
-  
-  plots <- list(p1, p2, p3)
-
-  
-} else if(length(pol_groups) == 4) {
-  
-  p3 <- sum2 %>% filter(pol_group == pol_groups[3]) %>% 
-  plot_pollin_facet(pol_groups[3])
-  
-  p4 <- sum2 %>% filter(pol_group == pol_groups[4]) %>% 
-    plot_pollin_facet(pol_groups[4], patch.position = 'bottom')
-
-  plots <- list(p1, p2, p3, p4)
-}
-
-# Put the plots together
-wrap_plots(plots, ncol=1, guides = 'collect') +
-  plot_annotation(
-    caption = "Different colors within one facet indicate statistically significant (p < 0.05) difference between groups.",
-    tag_levels = 'a',
-    tag_suffix = ')') & 
-  theme(plot.title = element_blank())
-
-# Save figure
-fig_dir <- here::here('figures', 'diversity_by_zones')
-fig_fp <- file.path(fig_dir, 
-                    str_c('grpdiffs_samp', samp_n, '_USV_',  params$rich_code, 
-                          '_', datefilt_code, '_', params$nspecies, 'species_',
-                          length(levels(div_df$pol_group)), 'pols.png'))
-if(!file.exists(fig_fp)) ggsave(file.path(fig_dir, fn), height=8)
-```
-
-## Compare richness by zones - ANP zones
-### Define function 
-
-The function `get_grp_differences` evaluates the statistical significance of groups and return medians,  CIs, and significant groups for plotting. It will be applied to each group of pollinator, biome, and ANP zone. 
-
-```{r}
-df <- df_samp %>% filter(biome == 'CalMedit', usv=='ag', pol_group == 'Abejas')
-grp_var <- 'anp_zone'
-
-get_grp_diffs_ANP <- function(df, grp_var){
+```{r get_grp_diffs}
+get_grp_diffs <- function(df, grp_var){
   
   # Get medians and confidence intervals
   f <- str_c('richness ~ ', grp_var)
@@ -486,7 +254,7 @@ get_grp_diffs_ANP <- function(df, grp_var){
   if(length(unique(df[[grp_var]])) == 1) {
     
     print('Only one group.')
-    cld <- tibble(Group = unique(df[[grp_var]]), Letter = 'a')
+    cld <- tibble(zone = unique(df[[grp_var]]), sig_group = 'a')
     
   } else {
     
@@ -495,33 +263,119 @@ get_grp_diffs_ANP <- function(df, grp_var){
     if(kw$p.value > 0.05) print('No significantly different groups')
     
     # Post-hoc test to compare groups
-    PT <- pairwise.wilcox.test(df[['richness']], df[[grp_var]], p.adjust.method = 'fdr')
+    PT <- pairwise.wilcox.test(df[['richness']], df[[grp_var]], 
+                               p.adjust.method = 'fdr')
     PT1 = rcompanion::fullPTable(PT$p.value)
     cld_list <- multcompView::multcompLetters(PT1,
                   compare="<",
                   threshold=0.05,  # p-value to use as significance threshold
                   Letters=letters,
                   reversed = FALSE)
-    cld <- tibble(Letter = factor(cld_list$Letters), 
-                  Group = factor(names(cld_list$Letters)))
+    lv <- cld_list$Letters
+    cld <- tibble(sig_group = factor(lv, levels = sort(unique(lv))), 
+                  zone = factor(names(lv)))
   
   }
 
   # Join letter indicating significantly different groups to medians and CIs
-  sum1 <- select(tibble(cld), Group, Letter) %>% 
+  sum1 <- select(tibble(cld), zone, sig_group) %>% 
     left_join(tibble(Sum), 
-              by=c(Group=grp_var))
+              by=c(zone=grp_var))
   
   return(sum1)
 }
 ```
-### Sample DF
 
-```{r}
+```{r plot_pollin_facet, echo=F}
+plot_pollin_facet <- function(df, pol_grp, var2='usv', grp_var='anp_zone', 
+                              patch.position='inner', legend_on=FALSE){
+  
+  xmax <- max(df$Percentile.upper)
+  
+  df_rect <- distinct(df, biome, .data[[var2]], pol_group)
+  if(grp_var == 'anp_zone'){
+    
+    var_levels <- c( 'Outside buffer', 'Buffer 10 km', 'Inside NPA')
+    facet_y <- 'Land cover'
+    
+  } else if (grp_var == 'usv') {
+    
+    var_levels <- c( 'otro', 'ag', 'veg')
+    facet_y <- 'ANP zone'
+    
+  }
+  
+  if(var2 != 'pol_group'){
+     p <- ggplot(df) +
+       
+      # shade facet by ANP zone
+      geom_rect(data=df_rect, aes(xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf,
+                    fill=.data[[var2]]), alpha=0.25, color='white') +
+      scale_fill_grey(name = facet_y, start=0.05, end=0.75) 
+     
+  } else {
+    
+    p <- ggplot(df)
+    
+  }
+  
+  p <- p +
+  
+    # plot CIs
+    geom_errorbar(aes(y = zone, x = Median, color=sig_group,
+                      xmin = Percentile.lower, xmax = Percentile.upper),
+                   width = 0.3, size  = 0.5) +
+    
+    # plot medians
+     geom_point(aes(y = zone, x = Median, color=sig_group), 
+                shape = 15, size  = 2) +
+     xlab("Median richness with 95% CI") +
+    
+    scale_color_manual(values=c('a'='#F8766D', 'ab'='#C77CFF', 'b'='#00BFC4', 
+                       'bc'='#7CAE00', 'c'='#DE8C00'), 
+                       # limits = c('a', 'ab', 'b', 'bc', 'c'),
+                       name='Group',
+                       drop=FALSE) +
+      
+    scale_y_discrete(limits = var_levels) +
+    scale_x_continuous(n.breaks= 3) +
+  
+    # Facet by x=pollinator group, y = ANP zone
+    facet_grid(vars(.data[[var2]]), vars(biome)) +
+    ggtitle(pol_grp) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size=rel(1), face='bold', hjust=0),
+      panel.spacing = unit(0.5, 'mm'),
+      panel.border=element_blank(),
+      # panel.grid = element_line(color='darkgray'), 
+      # panel.grid.minor.x = element_line(color='darkgray'),
+      panel.grid.major.y=element_blank(),
+      panel.ontop = FALSE,
+      panel.background = element_blank(),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(), 
+      axis.ticks.y = element_blank(),
+      # axis.text.x = element_text(margin = margin(t = .2, unit = "mm")),
+      strip.text = element_blank(),
+      strip.background = element_blank(),
+      strip.switch.pad.grid = unit(0.5, 'mm'),
+      legend.position = 'none'
+      )
+  
+  return(p)
+  
+}
+```
+
+#### Sample DF
+
+Create stratified random sample of pollinator richness values. `r params$samp_n` pixels are sampled from each unique combination biome, land cover type, and ANP zone. The same pixels are sample for each pollinator group, i.e. each pollinator richness layer.
+
+```{r sample-df}
 # Stratified random sample
-samp_n <- 350
-fn <- str_c('samp', samp_n, '_USV_', params$rich_code, '_', 
-            datefilt_code, '_', params$nspecies, 'species_',
+fn <- str_c('samp', params$samp_n, '_', params$rich_code, '_', 
+            dfilt_code, '_', params$nspecies, 'species_',
             length(levels(div_df$pol_group)), 'pols.rds')
 samp_fp <- file.path(div_dir, fn)
 
@@ -532,12 +386,12 @@ if(!file.exists(samp_fp)){
   samp_idx <- div_df %>% 
     filter(pol_group == 'Abejas') %>% 
     group_by(anp_zone, biome, usv) %>%
-    filter(n() > samp_n)
+    filter(n() > params$samp_n)
   
   # Random sample stratified by group
   set.seed(1)
   samp_idx <- samp_idx %>% 
-    do(slice_sample(., n=samp_n)) %>%
+    do(slice_sample(., n=params$samp_n)) %>%
     ungroup
   
   df_samp <- div_df %>% filter(cell %in% samp_idx$cell)
@@ -552,23 +406,34 @@ if(!file.exists(samp_fp)){
 }
 ```
 
-### Get group differences (comparing by land cover)
+### Compare groups
+#### Compare by land cover type
 
-```{r}
+```{r compare-usv-x-anp}
+grp_var <- 'usv'
+var2 <- 'anp_zone'
+
 # File name
-fn <- str_c('grpdiffs_samp', samp_n, '_ANP_', params$rich_code, '_', 
-            datefilt_code, '_', params$nspecies, 'species_',
+fn <- str_c('grpdiffs_samp', params$samp_n, '_', 
+            grp_var, '_', 
+            params$rich_code, '_', 
+            dfilt_code, '_', 
+            params$nspecies, 'species_',
             length(levels(div_df$pol_group)), 'pols.rds')
 grp_diffs_fp <- file.path(div_dir, fn)
 
 if(!file.exists(grp_diffs_fp)){
   
   # Get group differences for each combination of biome and ANP zone
-  df_nest <- df_samp %>% group_by(pol_group, biome, usv) %>% nest()
+  df_nest <- df_samp %>% group_by(pol_group, biome, .data[[var2]]) %>% nest()
   sum2 <- df_nest %>%
-    mutate(sum = purrr::map(data, get_grp_diffs_ANP, 'anp_zone')) %>%
+    mutate(sum = purrr::map(data, get_grp_diffs, grp_var)) %>%
     select(-data) %>% 
     unnest(cols=sum)
+  
+  sg_levels <- sort(as.character(unique(sum2$sig_group)))
+  sum2 <- sum2 %>% mutate(sig_group = factor(sig_group, 
+                                              levels = sg_levels))
   
   # Save 
   sum2 %>% saveRDS(grp_diffs_fp)
@@ -580,117 +445,42 @@ if(!file.exists(grp_diffs_fp)){
 }
 ```
 
-### Define plotting function to create facets biome x ANP zone with groups by USV
-
-```{r, echo=F}
-plot_pollin_facet <- function(df, pol_group, var2='usv',
-                              patch.position='inner', legend_on=FALSE){
-  
-  xmax <- max(df$Percentile.upper)
-  
-  df_rect <- distinct(df, biome, .data[[var2]], pol_group)
-  
-  p <- ggplot(df) +
-  
-    # shade facet by ANP zone
-    geom_rect(data=df_rect, aes(xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf,
-                  fill=.data[[var2]]), alpha=0.25, color='white') +
-    scale_fill_grey(name='Land cover', start=0.05, end=0.75) +
-
-    # plot CIs
-    geom_errorbar(aes(y = Group, x = Median, color=Letter,
-                      xmin = Percentile.lower, xmax = Percentile.upper),
-                   width = 0.1, size  = 0.5) +
-    
-    # plot medians
-     geom_point(aes(y = Group, x = Median, color=Letter), 
-                shape = 15, size  = 2) +
-     xlab("Median richness with 95% CI") +
-    
-    scale_color_manual(values=c('a'='salmon', 'ab'='#C77CFF', 'b'='#00BFC4', 
-                       'bc'='green', 'c'='goldenrod'), 
-                       name='Group',
-                       drop=FALSE) +
-      
-    # scale_y_discrete(limits = c( 'otro', 'ag', 'veg')) +
-    scale_x_continuous(
-      # breaks=scales::pretty_breaks(4),
-      #                  # breaks=scales::breaks_extended(4),
-                       n.breaks=2,
-                       
-      # limits = c(0, ceiling(xmax)+.2)
-      ) +
-  
-    # Facet by x=pollinator group, y = ANP zone
-    facet_grid(vars(.data[[var2]]), vars(biome)) +
-    ggtitle(pol_group) +
-    theme_minimal() +
-    theme(
-      plot.title = element_text(size=rel(1), face='bold', hjust=0),
-      panel.spacing = unit(0.5, 'mm'),
-      panel.border=element_blank(),
-      panel.grid.major.y=element_blank(),
-      panel.grid.minor.x=element_blank(),
-      axis.title.y = element_blank(), 
-      axis.ticks.y = element_blank(),
-      axis.text.x = element_text(margin = margin(t = .2, unit = "mm"),
-                                 hjust = c(0, 1)
-                                   ),
-      strip.text.y = element_blank(),
-      strip.background = element_blank(),
-      strip.switch.pad.grid = unit(0.5, 'mm')
-      )
-  
-  if(patch.position != 'top'){
-    p <- p + theme(
-        strip.text.x = element_blank()
-      )
-  } 
-  
-  if(patch.position != 'bottom'){
-    p <- p + theme(
-        axis.title.x = element_blank()
-      )
-  }
-  
-  if(!legend_on){
-    p <- p + theme(
-      legend.position = 'none'
-    )
-  }
-  
-  return(p)
-  
-}
-```
-
-### Plot by biome x ANP zone
-
-```{r}
+```{r plot-usv-x-anp, fig.width=7, fig.height=8, cache=T}
 pol_groups <- levels(sum2$pol_group)
 
 # Plot
 p1 <- sum2 %>% filter(pol_group == pol_groups[1]) %>% 
-  plot_pollin_facet(pol_groups[1], var='usv', patch.position='top')
+  plot_pollin_facet(pol_groups[1], var2=var2, grp_var=grp_var) +
+  theme(strip.text.x = element_text(size=rel(0.8)),
+        plot.title = element_text(vjust=0),
+        axis.title.x = element_blank())
 p2 <- sum2 %>% filter(pol_group == pol_groups[2]) %>% 
-  plot_pollin_facet(pol_groups[2], var='usv', legend_on=T)
+  plot_pollin_facet(pol_groups[2], var2=var2, grp_var=grp_var) +
+  theme(legend.position = 'right',
+        axis.title.x = element_blank())
+p3 <- sum2 %>% filter(pol_group == pol_groups[3]) %>% 
+  plot_pollin_facet(pol_groups[3], var2=var2, grp_var=grp_var) +
+  theme(axis.title.x = element_blank())
 
 # Vary the plotting based on whether we're looking at 3 or 4 groups
 if(length(pol_groups) == 3){
-  
-  p3 <- sum2 %>% filter(pol_group == pol_groups[3]) %>% 
-  plot_pollin_facet(pol_groups[3], var='usv', patch.position = 'bottom')
+  p3 <- p3 + theme(
+    axis.text.x = element_text(margin = margin(t = .2, unit = "mm"),
+                                   hjust = c(0, 0.5, 1) ),
+    axis.title.x = element_text())
   
   plots <- list(p1, p2, p3)
-
   
 } else if(length(pol_groups) == 4) {
   
-  p3 <- sum2 %>% filter(pol_group == pol_groups[3]) %>% 
-  plot_pollin_facet(pol_groups[3], var='usv')
-  
   p4 <- sum2 %>% filter(pol_group == pol_groups[4]) %>% 
-    plot_pollin_facet(pol_groups[4], var='usv', patch.position = 'bottom')
+    plot_pollin_facet(pol_groups[4], var2=var2, grp_var=grp_var) +
+    theme(axis.text.x = element_text(margin = margin(t = .2, unit = "mm"),
+                                   hjust = c(0, 0.5, 1)
+                                   # using a vector here may be deprecated. 
+                                   # Alternatives: ggtext + element_markdown()? 
+                                   ),
+          axis.title.x = element_text())
 
   plots <- list(p1, p2, p3, p4)
 }
@@ -698,103 +488,268 @@ if(length(pol_groups) == 3){
 # Put the plots together
 wrap_plots(plots, ncol=1, guides = 'collect') +
   plot_annotation(
-    caption = "Different colors within one facet indicate statistically significant (p < 0.05) difference between groups.",
-    # tag_levels = 'a',
-    # tag_suffix = ')'
-    ) & 
-  scale_x_continuous(n.breaks=3, 
+    caption = "Different colors within one facet indicate statistically significant (p < 0.05) difference between groups.") & 
+  scale_x_continuous(n.breaks=3,
                      limits = c(0, 10)) &
-  theme(plot.title.position = 'plot',
-        axis.text.x = element_text(margin = margin(t = .2, unit = "mm"),
-                                 hjust = c(0, 0.5, 1)
-                                   ))
+  theme(plot.title.position = 'plot')
 
 # Save figure
 fig_dir <- here::here('figures', 'diversity_by_zones')
-fig_fp <- file.path(fig_dir, 
-                    str_c('grpdiffs_samp', samp_n, '_ANP_',  params$rich_code, 
-                          '_', datefilt_code, '_', params$nspecies, 'species_',
+fig_fp <- file.path(fig_dir, dfilt_code,
+                    str_c('grpdiffs_samp', params$samp_n, '_', 
+                          grp_var, '_', 
+                          params$rich_code, '_', 
+                          dfilt_code, '_',
+                          params$nspecies, 'species_',
                           length(levels(div_df$pol_group)), 'pols.png'))
 if(!file.exists(fig_fp)) ggsave(fig_fp, height=8)
 ```
 
+#### Compare by ANP zone
 
+```{r compare-anp-x-usv}
+grp_var <- 'anp_zone'
+var2 <- 'usv'
 
+# File name
+fn <- str_c('grpdiffs_samp', params$samp_n, '_', grp_var, '_', params$rich_code, '_', 
+            dfilt_code, '_', params$nspecies, 'species_',
+            length(levels(div_df$pol_group)), 'pols.rds')
+grp_diffs_fp <- file.path(div_dir, fn)
 
-
-
-
-
-
-
-
-### Plot facets by Pollinator x ANP zone
-
-```{r, echo=FALSE, eval=FALSE}
-plot_biome_facet <- function(df, biome_name){
-  ggplot(df, aes(y = usv, x = Median, color=Letter)) +
+if(!file.exists(grp_diffs_fp)){
   
-    # shade facet by ANP zone
-    geom_rect(aes(xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf,
-                  fill=anp_zone), alpha=0.2, color='white') +
-    # scale_fill_manual(values = c("darkgray", 'lightgray', "white"), name='ANP zone') +
-    scale_fill_grey(name='ANP zone', start=0.1, end=0.9) +
+  # Get group differences for each combination of biome and ANP zone
+  df_nest <- df_samp %>% group_by(pol_group, biome, .data[[var2]]) %>% nest()
+  sum2 <- df_nest %>%
+    mutate(sum = purrr::map(data, get_grp_diffs, grp_var)) %>%
+    select(-data) %>% 
+    unnest(cols=sum)
   
-    # plot CIs
-    geom_errorbar(aes(y = usv, x = Median, color=Letter,
-                      xmin = Percentile.lower, xmax = Percentile.upper),
-                   width = 0.1, size  = 0.5) +
-    
-    # plot medians
-     geom_point(aes(y = usv, x = Median, color=Letter), 
-                shape = 15, size  = 2) +
-     xlab("Median richness with 95% CI") +
-    
-    scale_color_manual(values=c('a'='salmon', 'ab'='#C77CFF', 'b'='#00BFC4', 
-                       'bc'='green', 'c'='goldenrod'), 
-                       name='Group',
-                       drop=FALSE) +
+  sg_levels <- sort(as.character(unique(sum2$sig_group)))
+  sum2 <- sum2 %>%
+    mutate(sig_group = factor(sig_group, levels = sg_levels))
   
-    # Facet by x=pollinator group, y = ANP zone
-    facet_grid(vars(anp_zone), vars(pol_group)) +
-    theme(strip.text.y = element_blank()) +
-    ggtitle(biome_name)
+  # Save 
+  sum2 %>% saveRDS(grp_diffs_fp)
+  
+} else {
+  
+  sum2 <- readRDS(grp_diffs_fp)
+  
+}
+```
+
+```{r plot-anp-x-usv, fig.height=8, fig.width=7, cache=TRUE}
+pol_groups <- levels(sum2$pol_group)
+
+# Plot
+p1 <- sum2 %>% filter(pol_group == pol_groups[1]) %>% 
+  plot_pollin_facet(pol_groups[1], var2=var2, grp_var=grp_var) +
+  theme(strip.text.x = element_text(size=rel(0.8)),
+        plot.title = element_text(vjust=0),
+        axis.text.x = element_blank())
+p2 <- sum2 %>% filter(pol_group == pol_groups[2]) %>% 
+  plot_pollin_facet(pol_groups[2], var2=var2, grp_var=grp_var) +
+  theme(legend.position = 'right',
+        axis.text.x = element_blank())
+p3 <- sum2 %>% filter(pol_group == pol_groups[3]) %>% 
+  plot_pollin_facet(pol_groups[3], var2=var2, grp_var=grp_var) +
+  theme(axis.text.x = element_blank())
+
+# Vary the plotting based on whether we're looking at 3 or 4 groups
+if(length(pol_groups) == 3){
+  p3 <- p3 + theme(
+    axis.text.x = element_text(margin = margin(t = .2, unit = "mm"),
+                                   hjust = c(0, 0.5, 1) ))
+  
+  plots <- list(p1, p2, p3)
+  
+} else if(length(pol_groups) == 4) {
+  
+  p4 <- sum2 %>% filter(pol_group == pol_groups[4]) %>% 
+    plot_pollin_facet(pol_groups[4], var2=var2, grp_var=grp_var) +
+    theme(axis.text.x = element_text(margin = margin(t = .2, unit = "mm"),
+                                   hjust = c(0, 0.5, 1) ))
+
+  plots <- list(p1, p2, p3, p4)
+}
+
+# Put the plots together
+wrap_plots(plots, ncol=1, 
+           guides = 'collect') +
+  plot_annotation(
+    caption = "Different colors within one facet indicate statistically significant (p < 0.05) difference between groups.") & 
+  scale_x_continuous(n.breaks=3,
+                     limits = c(0, 10)) &
+  theme(plot.title.position = 'plot')
+
+# Save figure
+fig_dir <- here::here('figures', 'diversity_by_zones')
+fig_fp <- file.path(fig_dir, dfilt_code,
+                    str_c('grpdiffs_samp', params$samp_n, '_', 
+                          grp_var, '_',  params$rich_code, '_',
+                          dfilt_code, '_', params$nspecies, 'species_',
+                          length(levels(div_df$pol_group)), 'pols.png'))
+if(!file.exists(fig_fp)) ggsave(fig_fp, height=8)
+```
+
+#### Compare by ANP zone without land cover
+
+```{r compare-anp, fig.width=7, fig.height=4, cache=T}
+grp_var <- 'anp_zone'
+var2 <- NA
+
+# File name
+fn <- str_c('grpdiffs_samp', params$samp_n, '_', 
+            grp_var, '_', 'noUSV_',
+            params$rich_code, '_', 
+            dfilt_code, '_', params$nspecies, 'species_',
+            length(levels(div_df$pol_group)), 'pols.rds')
+grp_diffs_fp <- file.path(div_dir, fn)
+
+if(!file.exists(grp_diffs_fp)){
+  
+  # Get group differences for each combination of biome and ANP zone
+  if(is.na(var2)){
+    df_nest <- df_samp %>% group_by(pol_group, biome) %>% nest()
+  } else {
+    df_nest <- df_samp %>% group_by(pol_group, biome, .data[[var2]]) %>% nest()
+  }
+  medians_anp <- df_nest %>%
+    mutate(sum = purrr::map(data, get_grp_diffs, grp_var)) %>%
+    select(-data) %>% 
+    unnest(cols=sum)
+  
+  sg_levels <- sort(as.character(unique(medians_anp$sig_group)))
+  medians_anp <- medians_anp %>% mutate(sig_group = factor(sig_group, 
+                                              levels = sg_levels))
+  
+  # Save 
+  medians_anp %>% saveRDS(grp_diffs_fp)
+  
+} else {
+  
+  medians_anp <- readRDS(grp_diffs_fp)
+  
 }
 
 # Plot
-biomes <- levels(sum2$biome)
-(p1 <- sum2 %>% filter(biome == biomes[1]) %>% 
-  plot_biome_facet(biomes[1]))
-p2 <- sum2 %>% filter(biome == biomes[2]) %>% 
-  plot_biome_facet(biomes[2])
-p3 <- sum2 %>% filter(biome == biomes[3]) %>% 
-  plot_biome_facet(biomes[3])
-p4 <- sum2 %>% filter(biome == biomes[4]) %>% 
-  plot_biome_facet(biomes[4])
-p5 <- sum2 %>% filter(biome == biomes[5]) %>% 
-  plot_biome_facet(biomes[5])
-p6 <- sum2 %>% filter(biome == biomes[6]) %>% 
-  plot_biome_facet(biomes[6])
-p7 <- sum2 %>% filter(biome == biomes[7]) %>% 
-  plot_biome_facet(biomes[7])
+medians_anp %>% 
+  plot_pollin_facet('All', var2='pol_group', grp_var=grp_var) +
+    scale_x_continuous(n.breaks= 4) +
+    theme(axis.title.y = element_blank(),
+        axis.title.x = element_text(margin= margin(t=6, unit='pt')),
+        axis.text.x = element_text(hjust=c(0, 0.5, 1)), 
+        plot.title = element_blank(), 
+        legend.position = 'bottom', 
+        legend.box.spacing = unit(1, 'pt'),
+        strip.text = element_text(size=rel(0.8)),
+        panel.background = element_rect(fill=alpha('#A6A6A6', 0.3), 
+                                        color='white'),
+        panel.grid = element_line(color='lightgray'),
+        panel.grid.minor.x = element_line(color='lightgray')
+        ) +
+    labs(caption = "Different colors within one facet indicate statistically significant (p < 0.05) difference between groups.")
 
-wrap_plots(p1, p2, p3, p4, p5, p6, p7)+
-  plot_layout(guides = 'collect') +
-  plot_annotation(caption = "Different colors within one facet indicate statistically significant difference between groups.") &
-  scale_x_continuous(limits = c(0, 5)) &
-  scale_y_discrete(limits = c( 'otro', 'ag', 'veg')) &
-  # theme_classic() &
-  theme(axis.title = element_blank(), 
-        # strip.text = element_blank(),
-        plot.title = element_text(size=10)
-        # axis.ticks = element_blank(), 
-        # axis.text = element_blank()
-        )
+# Save figure
+fig_dir <- here::here('figures', 'diversity_by_zones')
+fig_fp <- file.path(fig_dir, dfilt_code,
+                    str_c('grpdiffs_samp', params$samp_n, '_', 
+                          grp_var, '_', 'noUSV_',
+                          params$rich_code, '_', 
+                          dfilt_code, '_', 
+                          params$nspecies, 'species_',
+                          length(levels(div_df$pol_group)), 'pols.png'))
+if(!file.exists(fig_fp)) ggsave(fig_fp, width=9, height=4)
 ```
 
-## Exploratory Plots
+#### Compare by land cover without ANP zone
 
-```{r, echo=F, eval=FALSE}
+```{r compare-usv, fig.height=4, fig.width=7, warning=FALSE, cache=TRUE}
+grp_var <- 'usv'
+var2 <- NA
+
+# File name
+fn <- str_c('grpdiffs_samp', params$samp_n, '_', 
+            grp_var, '_', 'noANP_',
+            params$rich_code, '_', 
+            dfilt_code, '_', params$nspecies, 'species_',
+            length(levels(div_df$pol_group)), 'pols.rds')
+grp_diffs_fp <- file.path(div_dir, fn)
+
+if(!file.exists(grp_diffs_fp)){
+  
+  # Get group differences for each combination of biome and ANP zone
+  if(is.na(var2)){
+    df_nest <- df_samp %>% group_by(pol_group, biome) %>% nest()
+  } else {
+    df_nest <- df_samp %>% group_by(pol_group, biome, .data[[var2]]) %>% nest()
+  }
+  
+  # compare richness distribution within groups
+  medians_usv <- df_nest %>%
+    mutate(sum = purrr::map(data, get_grp_diffs, grp_var)) %>%
+    select(-data) %>% 
+    unnest(cols=sum)
+  
+  # establish order for letters (significant groups)
+  sg_levels <- sort(as.character(unique(medians_usv$sig_group)))
+  medians_usv <- medians_usv %>% mutate(sig_group = factor(sig_group, 
+                                              levels = sg_levels))
+  
+  # Save 
+  medians_usv %>% saveRDS(grp_diffs_fp)
+  
+} else {
+  
+  medians_usv <- readRDS(grp_diffs_fp)
+  
+}
+
+# Plot
+medians_usv %>% 
+  plot_pollin_facet('All', var2='pol_group', grp_var=grp_var) +
+    scale_x_continuous(n.breaks= 4) +
+    theme(axis.title.y = element_blank(),
+        axis.title.x = element_text(margin= margin(t=6, unit='pt')),
+        axis.text.x = element_text(hjust=c(0, 0.5, 1)), 
+        plot.title = element_blank(), 
+        legend.position = 'bottom', 
+        legend.box.spacing = unit(1, 'pt'),
+        strip.text = element_text(size=rel(0.8)),
+        panel.background = element_rect(fill=alpha('#A6A6A6', 0.3), 
+                                        color='white'),
+        panel.grid = element_line(color='lightgray'),
+        panel.grid.minor.x = element_line(color='lightgray')
+        ) +
+    labs(caption = "Different colors within one facet indicate statistically significant (p < 0.05) difference between groups.")
+
+# Save figure
+fig_dir <- here::here('figures', 'diversity_by_zones')
+fig_fp <- file.path(fig_dir, dfilt_code,
+                    str_c('grpdiffs_samp', params$samp_n, '_', 
+                          grp_var, '_', 'noANP_',
+                          params$rich_code, '_', 
+                          dfilt_code, '_', 
+                          params$nspecies, 'species_',
+                          length(levels(div_df$pol_group)), 'pols.png'))
+if(!file.exists(fig_fp)) ggsave(fig_fp, width=9, height=4)
+```
+
+
+
+
+
+
+
+
+
+
+
+#### Exploratory Plots
+
+```{r, eval=FALSE}
 # Plot all groups with facets by biome and pollinators
 div_df %>%
   filter(pol_group == 'Colibries', biome== 'Selvas Calido-Secas') %>%
@@ -828,10 +783,9 @@ div_df %>%
   facet_wrap(facets=vars(biome))
 ```
 
-## Check for significant differences in groups
-### Abejas
+#### Check for significant differences in groups
 
-```{r compare abejas, echo=F, eval=FALSE}
+```{r compare abejas, eval=FALSE}
 abejas_df <- div_df %>% filter(pol_group == 'Abejas')
 m <- lm(richness ~ anp_zone, data = abejas_df)
 g <- multcomp::glht(m, linfct = multcomp::mcp(anp_zone = "Tukey"))
@@ -884,9 +838,9 @@ Sum = rcompanion::groupwiseMedian(richness ~ anp_zone,
                       digits     = 3)
 sum1 <- tibble(Sum) %>% 
   mutate(temp_zone = str_remove_all(anp_zone, ' |0')) %>% 
-  left_join(select(tibble(cld), Group, Letter), by=c(temp_zone='Group'))
+  left_join(select(tibble(cld), zone, sig_group), by=c(temp_zone='zone'))
 
-ggplot(sum1, aes(x = anp_zone, y = Median, color=Letter)) +
+ggplot(sum1, aes(x = anp_zone, y = Median, color=sig_group)) +
    geom_errorbar(aes(ymin = Percentile.lower, ymax = Percentile.upper),
                  width = 0.05, size  = 0.5) +
    geom_point(shape = 15, size  = 4) +
