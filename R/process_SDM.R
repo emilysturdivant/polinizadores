@@ -11,7 +11,7 @@ library(raster)
 library(stars)
 library(tidyverse)
 library(tmap)
-tmap_mode('view')
+tmap::tmap_mode('view')
 
 # Initialize -----
 # Mexico
@@ -36,112 +36,33 @@ pred <- predictors[[- which(names(predictors) %in% drop_lst) ]]
 # Set extent for testing
 ext <- extent(mex)
 
-# ~ Standard random forest (from R-Spatial https://rspatial.org/raster/sdm) ----
-unq_cells = TRUE
-mutually_exclusive_pa = TRUE
-filt_dates = FALSE
-pol_group <- 'Mariposas'
-nspecies <- 15
-
-# directory paths
-unq_code <- ifelse(unq_cells, 'unq_cells', 'unq_pts')
-unq_code <- ifelse(mutually_exclusive_pa, 'unq_cells_exclusive', unq_code)
-datefilt_code <- ifelse(filt_dates, '2000to2020', 'alldates')
-
-fp_tail <- file.path('sdm', str_c(unq_code, '_', datefilt_code), 'rf1', pol_group)
-pred_dir <- file.path('data', 'data_out', fp_tail)
-rf_fig_dir <- file.path('figures', fp_tail)
-dir.create(pred_dir, recursive=T, showWarnings = F)
-dir.create(rf_fig_dir, recursive=T, showWarnings = F)
-
-# Rename files to include pollinator name
-(fps <- list.files(pred_dir, 'tif$', full.name=T))
-(pol_name <- basename(pred_dir))
-(date_filt <- str_extract(pred_dir, '2000to2020|alldates'))
-(new_fps <- fps %>% str_replace('richness_', str_glue('rich_{pol_name}_{date_filt}_')))
-file.rename(fps, new_fps)
-
-(fps <- list.files(rf_fig_dir, 'png$', full.name=T))
-(pol_name <- basename(rf_fig_dir))
-(date_filt <- str_extract(rf_fig_dir, '2000to2020|alldates'))
-(new_fps <- fps %>% str_replace('richness_', str_glue('rich_{pol_name}_{date_filt}_')))
-file.rename(fps, new_fps)
-
-# Get list of species in Informacion_general ----
-# infogen <- readxl::read_excel('data/input_data/Quesada_bioclim_pol_y_cultivos/Informacion_general.xlsx', 
-#                               'Polinizadores', skip=1)
-# # infogen %>% distinct(Orden)
-# # info_abejas <- infogen %>% filter(Orden == pol_order)
-# info_sin <- infogen %>% 
-#   filter(!is.na(Sinonimias)) %>% 
-#   mutate(Especie = Sinonimias)
-# infogen <- bind_rows(infogen, info_sin)
-# sp_list <- infogen %>% distinct(Especie) %>% deframe
-
-# Load pollinator points ----
-# pol_dir <- 'data/data_out/pollinator_points/with_duplicates'
-pol_dir <- 'data/data_out/pollinator_points/no_duplicates'
-pol_fp <- file.path(pol_dir, str_c(pol_group, '.gpkg'))
-pol_df1 <- st_read(pol_fp)
-
-# Optionally filter to date range
-if(filt_dates) {
-  # Dates
-  date_min <- as.POSIXct(str_c(date_range[[1]], "-01-01"))
-  date_max <- as.POSIXct(str_c(date_range[[2]], "-12-31"))
-  
-  pol_df1 <- pol_df1 %>% 
-    filter(eventDate >= date_min & eventDate <= date_max)
-}
-
-# Remove species with less than 25 distinct observations (based on Koch et al. 2017)
-pol_df2 <- pol_df1 %>% 
-  distinct(species) %>%
-  st_transform(st_crs(predictors)) %>% 
-  # filter(species %in% sp_list) %>%
-  group_by(species) %>% 
-  filter(n() > 24) %>% 
-  ungroup()
-
-# LOOP through species (15 most prolific) ----
-sp_counts <- pol_df2 %>% st_drop_geometry %>% count(species) %>% arrange(desc(n))
-sp_list <- sp_counts %>% slice(1:nspecies) %>% select(species) %>% deframe
-for(sp_name in sp_list) {
-  
-  print(sp_name)
-  
-  # Filepath
-  sp_nospc <- str_replace(sp_name, ' ', '_')
-  model_fp <- file.path(pred_dir, 'models', str_c(sp_nospc, '.rds'))
-  if (file.exists(model_fp)) {
-    print('Model already created.')
-    next
-  }
+#' @export
+model_species_rf <- function(sp_df,
+                             pred, 
+                             model_fp, 
+                             sp_name,
+                             eval_fp,
+                             erf_fp,
+                             mutually_exclusive_pa=TRUE,
+                             unq_cells=TRUE,
+                             rf_fig_dir=NULL) {
   
   # Presence points
-  # Filter to species
-  sp_df <- pol_df2 %>% 
-    filter(species == sp_name)
-  
-  if(nrow(sp_df) < 1) {
-    print('No rows for the given species.')
-    next
-  }
   
   # Convert to coords DF
   sp1 <- sp_df %>% 
     mutate(lon = unlist(map(.$geom, 1)), 
            lat = unlist(map(.$geom, 2))) %>% 
     st_drop_geometry() %>% 
-    select(lon, lat)
-
+    dplyr::select(lon, lat)
+  
   # Background points
   pres_pts <- as_Spatial(sp_df)
   
   set.seed(10)
   if(mutually_exclusive_pa) {
     
-    backg <- randomPoints(mask=pred, n=1000, p = pres_pts
+    backg <- randomPoints(mask = pred, n=1000, p = pres_pts
                           # prob = T, # use mask as sampling bias grid
     )
   } else {
@@ -173,14 +94,14 @@ for(sp_name in sp_list) {
   pb_train <- c(rep(1, nrow(train_1)), rep(0, nrow(train_0)))
   envtrain1 <- data.frame( cbind(pa = pb_train, envtrain1) ) %>% 
     mutate(across(starts_with(c('biomes', 'ESA', 'usv')), as.factor)) %>% 
-    select(-ID)
+    dplyr::select(-ID)
   
   # Remove duplicated cells
   if(unq_cells) {
     envtrain1 <- envtrain1 %>% distinct()
   }
-
-  envtrain <- envtrain1 %>% select(-cells)
+  
+  envtrain <- envtrain1 %>% dplyr::select(-cells)
   
   # Testing datasets - get predictors for test presence and background points
   testpres <- data.frame( raster::extract(pred, test_1) ) %>%
@@ -190,7 +111,7 @@ for(sp_name in sp_list) {
     mutate(across(starts_with(c('biomes', 'ESA', 'usv')), as.factor))
   
   # Set factor levels for test DFs to match training data
-  vars <- envtrain %>% select(where(is.factor)) %>% tbl_vars
+  vars <- envtrain %>% dplyr::select(where(is.factor)) %>% tbl_vars
   for(var in vars){
     levels(testpres[[var]]) <- levels(envtrain[[var]])
     levels(testbackg[[var]]) <- levels(envtrain[[var]])
@@ -203,20 +124,15 @@ for(sp_name in sp_list) {
     na.action = na.exclude,
     importance=T, 
     ntree=1000)
-
+  
   # Save
   dir.create(dirname(model_fp), recursive = T, showWarnings = F)
   saveRDS(rf1, model_fp)
   # rf1 <- readRDS(model_fp)
   
-  # Evaluate model ----
   # Filenames
-  eval_fp <- file.path(pred_dir, 'model_evals', str_c(sp_nospc, '.csv'))
-  erf_fp <- file.path(pred_dir, 'model_evals', str_c(sp_nospc, '.rds'))
-  plot_fp <- file.path(rf_fig_dir, 'var_importance', str_c(sp_nospc, '.png'))
   dir.create(dirname(eval_fp), recursive = T, showWarnings = F)
-  dir.create(dirname(plot_fp), recursive = T, showWarnings = F)
-
+  
   # Evaluate model with test data
   erf <- dismo::evaluate(testpres, testbackg, rf1)
   
@@ -230,17 +146,258 @@ for(sp_name in sp_list) {
     N_unq_cells=nrow(filter(envtrain, pa == 1)),
     np=erf@np, na=erf@na, auc=erf@auc,
     cor=erf@cor, pcor=erf@pcor, 
-    spec_sens=threshold(erf, "spec_sens"))
+    spec_sens=dismo::threshold(erf, "spec_sens"))
   
   spc_eval %>% write_csv(eval_fp)
+  
+  if(!is.null(rf_fig_dir)){
+    # Get plot directory
+    plot_fp <- file.path(rf_fig_dir, 'var_importance', str_c(sp_nospc, '.png'))
+    dir.create(dirname(plot_fp), recursive = T, showWarnings = F)
+    
+    # Save plot
+    png(plot_fp)
+    randomForest::varImpPlot(rf1, type=1, sort=F, 
+                             main=sp_name,
+                             pt.cex=1,
+                             bg='black')
+    dev.off()
+  }
+  
+  # Return
+  return(erf)
+}
 
-  # Save plot
-  png(plot_fp)
-  randomForest::varImpPlot(rf1, type=1, sort=F, 
-                           main=sp_name,
-                           pt.cex=1,
-                           bg='black')
-  dev.off()
+#' @export
+predict_distribution_rf <- function(rf_fp, erf_fp, likelihood_fp, binned_fp, ext){
+  
+  # Load model
+  if(is.character(rf_fp)){
+    rf1 <- readRDS(rf_fp)
+  } else {
+    rf1 <- rf_fp
+  }
+  
+  # Create map and interpolate to fill holes
+  pr_rf1 <- dismo::predict(predictors, rf1, ext=ext)
+  pr_rf1 <- raster::focal(pr_rf1, 
+                          w=matrix(1,nrow=3, ncol=3), 
+                          fun=mean, 
+                          NAonly=TRUE, 
+                          na.rm=TRUE) 
+  
+  # Save likelihood raster
+  dir.create(dirname(likelihood_fp), recursive = T, showWarnings = F)
+  writeRaster(pr_rf1, likelihood_fp, overwrite=T, 
+              options=c("dstnodata=-99999"), wopt=list(gdal='COMPRESS=LZW'))
+  
+  # Apply threshold from max TPR+TNR and save
+  erf <- readRDS(erf_fp)
+  tr <- threshold(erf, 'spec_sens')
+  pa_rf1 <- pr_rf1 > tr
+  
+  # Save
+  dir.create(dirname(binned_fp), recursive = T, showWarnings = F)
+  writeRaster(pa_rf1, binned_fp, overwrite=T,
+              options=c("dstnodata=-99999"), wopt=list(gdal='COMPRESS=LZW'))
+}
+
+#' @export
+stack_sdms <- function(sp_fps, rich_tif_fp, rich_plot_fp, mex){
+  
+  pol_stack <- stack(sp_fps)
+  
+  # Sum layers and save 
+  pol_rich <- sum(pol_stack, na.rm=T)
+  pol_rich_msk <- mask(pol_rich, as_Spatial(mex))
+  writeRaster(pol_rich_msk, rich_tif_fp, overwrite=T,
+              options=c("dstnodata=-99999"), wopt=list(gdal='COMPRESS=LZW'))
+  
+  # Plot richness
+  pol_rich_stars <- st_as_stars(pol_rich_msk)
+  rich_plot  <- ggplot() +
+    geom_stars(data=pol_rich_stars) +
+    geom_sf(data = mex, fill = "transparent", size = 0.2, color = alpha("lightgray", 0.2)) +
+    colormap::scale_fill_colormap(str_glue("Richness\n(N = {nlayers(pol_stack)})"), 
+                                  na.value = "transparent", 
+                                  colormap = colormap::colormaps$viridis) +
+    ggthemes::theme_hc() +
+    theme(legend.position=c(.95, 1), legend.title.align=0, legend.justification = c(1,1)) +
+    labs(x = NULL, y = NULL)
+  
+  # Save
+  ggsave(rich_plot_fp, rich_plot, width=9, height=5.7, dpi=120)
+  
+  # Facet individual PA maps
+  # pa_facets  <- rasterVis::gplot(pol_stack) +
+  #   geom_tile(aes(fill = value)) +
+  #   colormap::scale_fill_colormap(str_glue("Occupancy likelihood"), na.value = "transparent",
+  #                                 colormap = colormap::colormaps$viridis) +
+  #   theme_minimal() +
+  #   theme(legend.position='bottom') +
+  #   labs(x = NULL, y = NULL) +
+  #   coord_equal() +
+  #   facet_wrap(~ variable, nrow=3)
+  # 
+  # # Save
+  # ggsave(file.path(rf_fig_dir, str_glue('Likhd_{nlayers(pol_stack)}species.png')), pa_facets, width=9, height=5)
+  
+}
+
+# ~ Standard random forest (from R-Spatial https://rspatial.org/raster/sdm) ----
+unq_cells = TRUE
+mutually_exclusive_pa = TRUE
+filt_dates = FALSE
+pol_group <- 'Mariposas'
+nspecies <- 15
+
+# directory paths
+unq_code <- ifelse(unq_cells, 'unq_cells', 'unq_pts')
+unq_code <- ifelse(mutually_exclusive_pa, 'unq_cells_exclusive', unq_code)
+dfilt_code <- ifelse(filt_dates, '2000to2020', 'alldates')
+
+fp_tail <- file.path('sdm', str_c(unq_code, '_', dfilt_code), 'rf1', pol_group)
+pred_dir <- file.path('data', 'data_out', fp_tail)
+rf_fig_dir <- file.path('figures', fp_tail)
+dir.create(pred_dir, recursive=T, showWarnings = F)
+dir.create(rf_fig_dir, recursive=T, showWarnings = F)
+
+# Prep/tidying ----
+# Rename files to include pollinator name
+(fps <- list.files(pred_dir, 'tif$', full.name=T))
+(pol_name <- basename(pred_dir))
+(dfilt_code <- str_extract(pred_dir, '2000to2020|alldates'))
+(new_fps <- fps %>% str_replace('richness_', str_glue('rich_{pol_name}_{dfilt_code}_')))
+file.rename(fps, new_fps)
+
+(fps <- list.files(rf_fig_dir, 'png$', full.name=T))
+(pol_name <- basename(rf_fig_dir))
+(dfilt_code <- str_extract(rf_fig_dir, '2000to2020|alldates'))
+(new_fps <- fps %>% str_replace('richness_', str_glue('rich_{pol_name}_{dfilt_code}_')))
+file.rename(fps, new_fps)
+
+# Filter pollinator points to only those species with >= 25 unique observations
+for(pol_group in pol_groups){
+  pol_dir <- 'data/data_out/pollinator_points/no_duplicates'
+  pol_fp_out <- file.path(pol_dir, str_c(dfilt_code, '_gt24perSpecies'), 
+                          str_c(pol_group, '.gpkg'))
+  
+  if(!file.exists(pol_fp_out)){
+    
+    # Load all pollinator points
+    pol_fp <- file.path(pol_dir, str_c(pol_group, '.gpkg'))
+    pol_df1 <- st_read(pol_fp)
+    
+    # Optionally filter to date range
+    if(filt_dates) {
+      # Dates
+      date_min <- as.POSIXct(str_c(date_range[[1]], "-01-01"))
+      date_max <- as.POSIXct(str_c(date_range[[2]], "-12-31"))
+      
+      pol_df1 <- pol_df1 %>% 
+        filter(eventDate >= date_min & eventDate <= date_max)
+    }
+    
+    # Remove species with less than 25 distinct observations (based on Koch et al. 2017)
+    pol_df2 <- pol_df1 %>% 
+      distinct(species) %>%
+      st_transform(st_crs(predictors)) %>% 
+      group_by(species) %>% 
+      filter(n() > 24) %>% 
+      ungroup()
+    
+    # Save
+    dir.create(dirname(pol_fp_out), recursive=TRUE, showWarnings =FALSE)
+    pol_df2 %>% st_write(pol_fp_out)
+  } 
+}
+
+pol_dir_out <- file.path(pol_dir, str_c(dfilt_code, '_gt24perSpecies'))
+fps <- list.files(pol_dir_out, 'gpkg$', full.names=T)
+combo <- fps %>% map_dfr(st_read)
+combo %>% st_write(file.path(pol_dir, 'combined', str_c(dfilt_code, '_gt24perSpecies.gpkg')))
+
+# Get list of species in Informacion_general 
+# infogen <- readxl::read_excel('data/input_data/Quesada_bioclim_pol_y_cultivos/Informacion_general.xlsx', 
+#                               'Polinizadores', skip=1)
+# # infogen %>% distinct(Orden)
+# # info_abejas <- infogen %>% filter(Orden == pol_order)
+# info_sin <- infogen %>% 
+#   filter(!is.na(Sinonimias)) %>% 
+#   mutate(Especie = Sinonimias)
+# infogen <- bind_rows(infogen, info_sin)
+# sp_list <- infogen %>% distinct(Especie) %>% deframe
+
+# Load pollinator points ----
+pol_dir <- 'data/data_out/pollinator_points/no_duplicates'
+pol_fp_out <- file.path(pol_dir, str_c(dfilt_code, '_gt24perSpecies'), 
+                        str_c(pol_group, '.gpkg'))
+pol_df2 <- st_read(pol_fp_out)
+
+# TESTING ----
+sp_list <- pol_species %>% 
+  semi_join(distinct(st_drop_geometry(pol_df2), species)) %>% 
+  dplyr::select(species) %>% deframe
+sp_nospc_list <- str_replace(sp_list, ' ', '_')
+(sp_name <- sp_list[[1]])
+
+# Filepath
+sp_nospc <- str_replace(sp_name, ' ', '_')
+model_fp <- file.path(pred_dir, 'models', str_c(sp_nospc, '.rds'))
+
+# Filter to species
+sp_df <- pol_df2 %>% 
+  filter(species == sp_name)
+
+# box::use(R/process_SDM[model_species_rf, eval_species_rf])
+erf <- model_species_rf(sp_df,
+                        pred, 
+                        model_fp, 
+                        sp_name,
+                        pred_dir,
+                        mutually_exclusive_pa,
+                        unq_cells,
+                        rf_fig_dir)
+
+# LOOP through species (15 most prolific) ----
+sp_counts <- pol_df2 %>% st_drop_geometry %>% count(species) %>% arrange(desc(n))
+sp_list <- sp_counts %>% slice(1:nspecies) %>% dplyr::select(species) %>% deframe
+sp_nospc_list <- str_replace(sp_list, ' ', '_')
+
+for(sp_name in sp_list) {
+  
+  print(sp_name)
+  
+  # Filepath
+  sp_nospc <- str_replace(sp_name, ' ', '_')
+  model_fp <- file.path(pred_dir, 'models', str_c(sp_nospc, '.rds'))
+  if (file.exists(model_fp)) {
+    print(str_c(sp_name, ': Model already created.'))
+    next
+  }
+  
+  # Filter to species
+  sp_df <- pol_df2 %>% 
+    filter(species == sp_name)
+  
+  if(nrow(sp_df) < 1) {
+    print(str_c(sp_name, ':No rows for the given species.'))
+    next
+  }
+  
+  sp_nospc <- str_replace(sp_name, ' ', '_')
+  eval_fp <- file.path(pred_dir, 'model_evals', str_c(sp_nospc, '.csv'))
+  erf_fp <- file.path(pred_dir, 'model_evals', str_c(sp_nospc, '.rds'))
+  
+  erf <- model_species_rf(sp_df,
+                          pred, 
+                          model_fp, 
+                          sp_name,
+                          eval_fp,
+                          erf_fp,
+                          mutually_exclusive_pa,
+                          unq_cells,
+                          rf_fig_dir)
 }
 
 # Look at model statistics together
@@ -253,10 +410,16 @@ if(length(fps) > 0) {
 
 # Save TIFs of likelihood and presence/absence ----
 fps <- list.files(file.path(pred_dir, 'models'), '*.rds', full.names = T)
-for(fp in fps){
+
+# filter filepaths to species list
+sp_fps <- sp_nospc_list %>% 
+  map(~str_subset(.y, .x), fps) %>% 
+  flatten_chr()
+
+for(rf_fp in sp_fps){
   
   # Filepaths  
-  sp_nospc <- file_path_sans_ext(basename(fp))
+  sp_nospc <- file_path_sans_ext(basename(rf_fp))
   print(sp_nospc)
   
   likelihood_fp <- file.path(pred_dir, 'likelihood', str_glue(sp_nospc, '.tif'))
@@ -266,36 +429,54 @@ for(fp in fps){
     next
   } 
   
-  dir.create(dirname(likelihood_fp), recursive = T, showWarnings = F)
-  dir.create(dirname(binned_fp), recursive = T, showWarnings = F)
-  
   erf_fp <- file.path(pred_dir, 'model_evals', str_c(sp_nospc, '.rds'))
   
-  # Load model
-  rf1 <- readRDS(fp)
- 
-  # Create map and interpolate to fill holes
-  pr_rf1 <- dismo::predict(predictors, rf1, ext=ext)
-  pr_rf1 <- raster::focal(pr_rf1, 
-                          w=matrix(1,nrow=3, ncol=3), 
-                          fun=mean, 
-                          NAonly=TRUE, 
-                          na.rm=TRUE) 
+  # Make TIFs of likelihood and presence/absence
+  predict_distribution_rf(rf_fp, erf_fp, likelihood_fp, binned_fp)
   
-  # Save likelihood raster
-  writeRaster(pr_rf1, likelihood_fp, overwrite=T, 
-              options=c("dstnodata=-99999"), wopt=list(gdal='COMPRESS=LZW'))
+}
+
+# CROP - sum to richness ----
+# Likelihood
+# List TIFs and filter to species list
+fps <- list.files(file.path(pred_dir, 'likelihood'), 'tif$', full.name=T)
+sp_fps <- sp_nospc_list %>% 
+  map(~str_subset(.y, .x), fps) %>% 
+  flatten_chr()
+
+if(length(sp_fps) > 0) {
   
-  # Apply threshold from max TPR+TNR and save
-  erf <- readRDS(erf_fp)
-  tr <- threshold(erf, 'spec_sens')
-  pa_rf1 <- pr_rf1 > tr
-  writeRaster(pa_rf1, binned_fp, overwrite=T,
-              options=c("dstnodata=-99999"), wopt=list(gdal='COMPRESS=LZW'))
+  rich_fp_prefix <- file.path('/home/esturdivant/PROJECTS/polinizadores/data/data_out/pollinator_points/sdms_by_crop/Cucurbita_argyrosperma', 
+                              str_glue('Likhd_rich_{dfilt_code}_{length(sp_fps)}species'))
+  rich_plot_fp <-str_glue('{rich_fp_prefix}.png')
+  rich_tif_fp <- str_glue('{rich_fp_prefix}.tif')
+  
+  stack_sdms(sp_fps, rich_tif_fp, rich_plot_fp, mex)
+  
+}
+
+# Presence/Absence
+# List TIFs and filter to species list
+fps <- list.files(file.path(pred_dir, 'binned_spec_sens'), 'tif$', full.name=T)
+sp_fps <- sp_nospc_list %>% 
+  map(~str_subset(.y, .x), fps) %>% 
+  flatten_chr()
+
+# Run for crop
+if(length(fps) > 0) {
+  
+  rich_fp_prefix <- file.path('/home/esturdivant/PROJECTS/polinizadores/data/data_out/pollinator_points/sdms_by_crop/Cucurbita_argyrosperma', 
+                              str_glue('PA_rich_{dfilt_code}_{length(sp_fps)}species'))
+  rich_tif_fp <- str_glue('{rich_fp_prefix}.tif')
+  rich_plot_fp <-str_glue('{rich_fp_prefix}.png')
+  
+  stack_sdms(sp_fps, rich_tif_fp, rich_plot_fp, mex)
+  
 }
 
 # Likelihood maps ----
 fps <- list.files(file.path(pred_dir, 'likelihood'), '*.tif', full.names=T)
+
 for (fp in fps) {
   
   # Filepaths
@@ -350,7 +531,6 @@ for (fp in fps) {
 }
 
 # COMBINE Sum likelihood maps ----
-
 # list species (such as nocturnal butterflies)
 if(pol_group == 'Mariposas'){
   sp_groups <- pol_df1 %>% st_drop_geometry %>% distinct(species, nocturna)
@@ -365,98 +545,38 @@ if(pol_group == 'Mariposas'){
     str_subset(str_glue('{l1_pattern}'))
 }
 
-# Use raster package
+# List TIFs and filter to species list
 fps <- list.files(file.path(pred_dir, 'likelihood'), 'tif$', full.name=T)
-if(length(fps) > 0) {
-  pol_stack <- stack(fps)
+sp_fps <- sp_nospc_list %>% 
+  map(~str_subset(.y, .x), fps) %>% 
+  flatten_chr()
+
+if(length(sp_fps) > 0) {
   
-  fn <- str_glue('Likhd_rich_{pol_group}_{datefilt_code}_{nlayers(pol_stack)}species')
-  rich_plot_fp <- file.path(rf_fig_dir, str_glue('{fn}.png'))
-  rich_tif_fp <- file.path(pred_dir, str_glue('{fn}.tif'))
+  rich_fn <- str_glue('Likhd_rich_{pol_group}_{dfilt_code}_{length(sp_fps)}species')
+  rich_plot_fp <- file.path(rf_fig_dir, str_glue('{rich_fn}.png'))
+  rich_tif_fp <- file.path(pred_dir, str_glue('{rich_fn}.tif'))
   
-  # Sum layers and save 
-  pol_rich <- sum(pol_stack, na.rm=T)
-  pol_rich_msk <- mask(pol_rich, as_Spatial(mex))
-  writeRaster(pol_rich_msk, rich_tif_fp, overwrite=T,
-              options=c("dstnodata=-99999"), wopt=list(gdal='COMPRESS=LZW'))
-  
-  # Plot richness
-  pol_rich_stars <- st_as_stars(pol_rich_msk)
-  rich_plot  <- ggplot() +
-    geom_stars(data=pol_rich_stars) +
-    geom_sf(data = mex, fill = "transparent", size = 0.2, color = alpha("lightgray", 0.2)) +
-    colormap::scale_fill_colormap(str_glue("Richness\n(N = {nlayers(pol_stack)})"), 
-                                  na.value = "transparent", 
-                                  colormap = colormap::colormaps$viridis) +
-    ggthemes::theme_hc() +
-    theme(legend.position=c(.95, 1), legend.title.align=0, legend.justification = c(1,1)) +
-    labs(x = NULL, y = NULL)
-  
-  # Save
-  ggsave(rich_plot_fp, rich_plot, width=9, height=5.7, dpi=120)
-  
-  # Facet individual PA maps
-  # pa_facets  <- rasterVis::gplot(pol_stack) +
-  #   geom_tile(aes(fill = value)) +
-  #   colormap::scale_fill_colormap(str_glue("Occupancy likelihood"), na.value = "transparent", 
-  #                                 colormap = colormap::colormaps$viridis) +
-  #   theme_minimal() +
-  #   theme(legend.position='bottom') +
-  #   labs(x = NULL, y = NULL) +
-  #   coord_equal() +
-  #   facet_wrap(~ variable, nrow=3)
-  # 
-  # # Save 
-  # ggsave(file.path(rf_fig_dir, str_glue('Likhd_{nlayers(pol_stack)}species.png')), pa_facets, width=9, height=5)
+  stack_sdms(sp_fps, rich_tif_fp, rich_plot_fp, mex)
   
 }
 
 # Sum presence/absence maps ----
 # Use raster package
 fps <- list.files(file.path(pred_dir, 'binned_spec_sens'), 'tif$', full.name=T)
+sp_fps <- sp_nospc_list %>% 
+  map(~str_subset(.y, .x), fps) %>% 
+  flatten_chr()
+
 if(length(fps) > 0) {
-  pol_stack <- stack(fps)
   
-  fn <- str_glue('PA_rich_{pol_group}_{datefilt_code}_{nlayers(pol_stack)}species')
+  fn <- str_glue('PA_rich_{pol_group}_{dfilt_code}_{nlayers(pol_stack)}species')
   binned_rich_plot_fp <- file.path(rf_fig_dir, str_glue('{fn}.png'))
   binned_rich_tif_fp <- file.path(pred_dir, str_glue('{fn}.tif'))
 
-  # Sum layers and covert to stars for plotting
-  pol_rich <- sum(pol_stack, na.rm=T)
-  pol_rich_msk <- mask(pol_rich, as_Spatial(mex))
-  writeRaster(pol_rich_msk, binned_rich_tif_fp, overwrite=T,
-              options=c("dstnodata=-99999"), wopt=list(gdal='COMPRESS=LZW'))
-  
-  # Plot richness
-  pol_rich_stars <- st_as_stars(pol_rich_msk)
-  rich_plot  <- ggplot() +
-    geom_stars(data=pol_rich_stars) +
-    geom_sf(data = mex, fill = "transparent", size = 0.2, color = alpha("white", 0.4)) +
-    colormap::scale_fill_colormap(str_glue("Richness\n(N = {nlayers(pol_stack)})"), 
-                                  na.value = "transparent", 
-                                  colormap = colormap::colormaps$viridis) +
-    ggthemes::theme_hc() +
-    theme(legend.position=c(.95, 1), legend.title.align=0, legend.justification = c(1,1)) +
-    labs(x = NULL, y = NULL)
-  
-  # Save
-  ggsave(binned_rich_plot_fp, rich_plot, width=9, height=5.7, dpi=120)
-  
-  # Facet individual PA maps
-  # pa_facets  <- rasterVis::gplot(pol_stack) +
-  #     geom_tile(aes(fill = value)) +
-  #     colormap::scale_fill_colormap(str_glue("Richness\n(N = {nlayers(pol_stack)})"), na.value = "transparent", 
-  #                                   colormap = colormap::colormaps$viridis) +
-  #     theme_minimal() +
-  #     theme(legend.position='none') +
-  #     labs(x = NULL, y = NULL) +
-  #     coord_equal() +
-  #     facet_wrap(~ variable, nrow=3)
-  # 
-  # # Save
-  # ggsave(file.path(rf_fig_dir, str_glue('PA_{nlayers(pol_stack)}species.png')), pa_facets, width=9, height=4)
+  stack_sdms(sp_fps, binned_rich_tif_fp, binned_rich_plot_fp, mex)
 
-  }
+}
 
 
 
@@ -529,7 +649,7 @@ sp1 <- sp_df %>%
   mutate(lon = unlist(map(.$geom, 1)), 
          lat = unlist(map(.$geom, 2))) %>% 
   st_drop_geometry() %>% 
-  select(lon, lat) %>% 
+  dplyr::select(lon, lat) %>% 
   mutate(Species = 1)
 
 # Get background points 
@@ -800,7 +920,7 @@ calculate_pland <- function(yr, regions, lc) {
 # iterate over all years extracting landcover for all checklists in each
 lc_extract <- ebird_buff %>% 
   mutate(pland = map2(year_lc, data, calculate_pland, lc = landcover)) %>% 
-  select(pland) %>% 
+  dplyr::select(pland) %>% 
   unnest(cols = pland)
 
 # 4. Calculate PLAND
@@ -809,7 +929,7 @@ pland <- lc_extract %>%
   group_by(locality_id, year) %>% 
   mutate(pland = n / sum(n)) %>% 
   ungroup() %>% 
-  select(-n) %>% 
+  dplyr::select(-n) %>% 
   # remove NAs after tallying so pland is relative to total number of cells
   filter(!is.na(landcover))
 
@@ -835,7 +955,7 @@ lc_names <- tibble(landcover = 0:15,
 pland <- pland %>% 
   inner_join(lc_names, by = "landcover") %>% 
   arrange(landcover) %>% 
-  select(-landcover)
+  dplyr::select(-landcover)
 
 # tranform to wide format, filling in implicit missing values with 0s%>% 
 pland <- pland %>% 
@@ -867,7 +987,7 @@ pland_pred <- lc_extract_pred %>%
   group_by(id) %>% 
   mutate(pland = n / sum(n)) %>% 
   ungroup() %>% 
-  select(-n) %>% 
+  dplyr::select(-n) %>% 
   # remove NAs after tallying so pland is relative to total number of cells
   filter(!is.na(landcover))
 
@@ -875,7 +995,7 @@ pland_pred <- lc_extract_pred %>%
 pland_pred <- pland_pred %>% 
   inner_join(lc_names, by = "landcover") %>% 
   arrange(landcover) %>% 
-  select(-landcover)
+  dplyr::select(-landcover)
 
 # tranform to wide format, filling in implicit missing values with 0s
 pland_pred <- pland_pred %>% 
@@ -883,7 +1003,7 @@ pland_pred <- pland_pred %>%
               values_from = pland, 
               values_fill = list(pland = 0)) %>% 
   mutate(year = max_lc_year) %>% 
-  select(id, year, everything())
+  dplyr::select(id, year, everything())
 
 # join in coordinates
 pland_coords <- st_transform(r_centers, crs = 4326) %>% 
@@ -908,6 +1028,7 @@ library(ebirdst)
 library(fields)
 library(gridExtra)
 library(tidyverse)
+
 # resolve namespace conflicts
 select <- dplyr::select
 map <- purrr::map

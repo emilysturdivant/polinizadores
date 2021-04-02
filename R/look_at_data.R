@@ -257,7 +257,7 @@ hex_polys <- mex %>% as_Spatial %>%
   st_as_sf(crs = st_crs(mex)) %>%
   st_intersection(., mex)                  # clip to the Mexico boundary
 
-# Filter points ----
+ # Filter points ----
 df <- df %>% 
   filter(eventDate > 2009)
 

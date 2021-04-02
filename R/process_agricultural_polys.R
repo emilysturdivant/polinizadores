@@ -1,27 +1,98 @@
 
 # Load libraries ----
 library(sf)
-# library(magrittr)
-# library(rvest)
 library(tools)
-library(mapview)
-library(tmap)
+# library(mapview)
+# library(tmap)
 # library(units)
 library(stringdist)
 library(tidyverse)
-library(ggplot2)
-theme_set(theme_minimal())
-library(ggnewscale)
+# library(magrittr)
+# library(ggplot2)
+# theme_set(theme_minimal())
+# library(ggnewscale)
 
 
 # Load pre-created objects (from prep_SIAP_data.R)
-load('data/helpers/initial_vars.RData')
-load('data/helpers/functions.RData')
+# load('data/helpers/initial_vars.RData')
+# load('data/helpers/functions.RData')
+# box::use(R/process_SDM[model_species_rf, predict_distribution_rf, stack_sdms])
+box::use(R/functions[model_species_rf, predict_distribution_rf, stack_sdms])
 crops_dir <- 'data/data_out/polys_ag_INEGI_wFMG_pcts/pcts_by_state'
 ag_by_crop_dir <- 'data/data_out/polys_ag_INEGI_wFMG_pcts/specific_crops'
 pol_pt_dir <- 'data/data_out/pollinator_points'
+crop_to_pols_fp <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/Apendice2.csv'
+
+dfilt_code <- 'alldates'
 
 # Functions --------------------------------------------------------------------
+convert_species_names <- function(fp, pols){
+  
+  # Load points and drop geometry
+  pts_no_geom <- st_read(fp) %>% 
+    st_drop_geometry()
+  
+  # Filter pollinators list to only those in current pollinator points 
+  pols_gen_filt <- semi_join(pols, pts_no_geom, by='genus')
+  pols_fam_filt <- semi_join(pols, pts_no_geom, by='family')
+  pols_order_filt <- semi_join(pols, pts_no_geom, by='order')
+  pols_class_filt <- semi_join(pols, pts_no_geom, by='class')
+  
+  # If there are no matching genera or families, stop function (move to next file)
+  if(all(nrow(pols_gen_filt) < 1, nrow(pols_fam_filt) < 1, 
+         nrow(pols_order_filt) < 1, nrow(pols_class_filt) < 1)) return()
+  
+  # Separate pollinators into those with species match vs. those with genus match
+  # Get pollinators with species match
+  pols_specs_filt <- pols %>% 
+    semi_join(pts_no_geom, by=c(Polinizador='species'))
+  
+  # Pollinators with genus match
+  pols_gen_filt <- pols_gen_filt %>% 
+    anti_join(pols_specs_filt)
+  
+  # Pollinators with family match
+  pols_fam_filt <- pols_fam_filt %>% 
+    anti_join(pols_specs_filt) %>% 
+    anti_join(pols_gen_filt)
+  
+  # Pollinators with species match
+  pols_order_filt <- pols_order_filt %>% 
+    anti_join(pols_specs_filt) %>% 
+    anti_join(pols_gen_filt) %>% 
+    anti_join(pols_fam_filt)
+  
+  # Pollinators with class match
+  pols_class_filt <- pols_class_filt %>% 
+    anti_join(pols_specs_filt) %>% 
+    anti_join(pols_gen_filt) %>% 
+    anti_join(pols_fam_filt) %>% 
+    anti_join(pols_order_filt)
+  
+  # Dissolve points by species
+  pts_diss <- pts_no_geom %>% 
+    distinct(species, genus, family, order)
+  
+  # Filter points conditionally to genus or species
+  out_pts <- pts_diss %>% 
+    filter(
+      genus %in% pols_gen_filt$genus | 
+        species %in% pols_specs_filt$Polinizador |
+        family %in% pols_fam_filt$family
+    )
+  
+  # Create file name
+  name <- fp %>% 
+    basename %>% 
+    file_path_sans_ext
+  
+  out_pts <- out_pts %>% 
+    mutate(pol_group = name)
+  
+  # Return filename
+  return(out_pts)
+}
+
 filter_pts <- function(fp, pols, cultivo_dir){
   
   # Load points
@@ -31,89 +102,51 @@ filter_pts <- function(fp, pols, cultivo_dir){
   pts_no_geom <- pts %>% 
     st_set_geometry(NULL)
   
-  # Filter list of genera for X crop to those in current pollinators file ----
-  pts_gen_list <- pts_no_geom %>% 
-    dplyr::select(genus) %>% 
-    distinct %>% 
-    deframe
-  
-  # Filter list to those in points
-  pols_gen_filt <- pols %>% 
-    filter(!is.na(genus) & genus %in% pts_gen_list)
-  
-  # FAMILY: Filter list of families for given crop to those in points ----
-  pts_fam_list <- pts_no_geom %>%
-    dplyr::select(family) %>%
-    distinct %>%
-    deframe
-  
-  # Filter pollinators list to families in currently loaded pollinators file
-  pols_fam_filt <- pols %>% 
-    filter(!is.na(family) & family %in% pts_fam_list)
-  
-  # ORDER: Filter list of orders for given crop to those in points ----
-  pts_order_list <- pts_no_geom %>%
-    dplyr::select(order) %>%
-    distinct %>%
-    deframe
-  
-  # Filter pollinators list to orders in currently loaded pollinators file
-  pols_order_filt <- pols %>% 
-    filter(!is.na(order) & order %in% c(pts_order_list))
-  
-  # CLASS: Filter list of classes for given crop to those in points ----
-  pts_class_list <- pts_no_geom %>%
-    dplyr::select(class) %>%
-    distinct %>%
-    deframe
-  
-  # Filter pollinators list to classes in currently loaded pollinators file
-  pols_class_filt <- pols %>% 
-    filter(!is.na(class) & class %in% pts_class_list)
-  
+  # Filter pollinators list to only those in current pollinator points 
+  pols_gen_filt <- semi_join(pols, pts_no_geom, by='genus')
+  pols_fam_filt <- semi_join(pols, pts_no_geom, by='family')
+  pols_order_filt <- semi_join(pols, pts_no_geom, by='order')
+  pols_class_filt <- semi_join(pols, pts_no_geom, by='class')
   
   # If there are no matching genera or families, stop function (move to next file)
-  if(nrow(pols_gen_filt) < 1 & 
-     nrow(pols_fam_filt) < 1 & 
-     nrow(pols_order_filt) < 1 & 
-     nrow(pols_class_filt) < 1) return()
+  if(all(nrow(pols_gen_filt) < 1, nrow(pols_fam_filt) < 1, 
+         nrow(pols_order_filt) < 1, nrow(pols_class_filt) < 1)) return()
+
+  # Separate pollinators into those with species match vs. those with genus match
+  # Get pollinators with species match
+  pols_specs_filt <- pols %>% 
+    semi_join(pts_no_geom, by=c(Polinizador='species'))
   
-  # Dissolve points by species
-  pts_diss <- pts %>% 
-    group_by(species, genus, family, order) %>% 
-    summarize %>% 
+  # Pollinators with genus match
+  pols_gen_filt <- pols_gen_filt %>% 
+    anti_join(pols_specs_filt)
+
+  # Pollinators with family match
+  pols_fam_filt <- pols_fam_filt %>% 
+    anti_join(pols_specs_filt) %>% 
+    anti_join(pols_gen_filt)
+  
+  # Pollinators with species match
+  pols_order_filt <- pols_order_filt %>% 
+    anti_join(pols_specs_filt) %>% 
+    anti_join(pols_gen_filt) %>% 
+    anti_join(pols_fam_filt)
+  
+  # Pollinators with class match
+  pols_class_filt <- pols_class_filt %>% 
+    anti_join(pols_specs_filt) %>% 
+    anti_join(pols_gen_filt) %>% 
+    anti_join(pols_fam_filt) %>% 
+    anti_join(pols_order_filt)
+  
+  # # Dissolve points by species
+  pts_diss <- pts %>%
+    group_by(species, genus, family, order) %>%
+    summarize %>%
     ungroup
   
-  # Separate pollinators into those with species match vs. those with genus match
-  pts_spec_list <- pts_no_geom %>% 
-    dplyr::select(species) %>% 
-    distinct %>% 
-    deframe
-  
-  pols_specs_filt <- pols %>% 
-    filter(Polinizador %in% pts_spec_list)
-  
-  pols_gen_filt <- pols_gen_filt %>% 
-    filter(!Polinizador %in% pts_spec_list & 
-             genus %in% pts_gen_list)
-  
-  pols_fam_filt <- pols_fam_filt %>% 
-    filter(!Polinizador %in% pts_spec_list &
-             !Polinizador %in% pts_gen_list &
-             family %in% pts_fam_list)
-  
-  pols_order_filt <- pols_order_filt %>% 
-    filter(!Polinizador %in% pts_spec_list &
-             !Polinizador %in% pts_gen_list &
-             !Polinizador %in% pts_fam_list &
-             order %in% pts_order_list)
-  
-  pols_class_filt <- pols_class_filt %>% 
-    filter(!Polinizador %in% pts_spec_list &
-             !Polinizador %in% pts_gen_list &
-             !Polinizador %in% pts_fam_list &
-             !Polinizador %in% pts_order_list &
-             class %in% pts_class_list)
+  pts_diss <- pts_no_geom %>% 
+    distinct(species, genus, family, order)
   
   # Filter points conditionally to genus or species
   out_pts <- pts_diss %>% 
@@ -283,48 +316,7 @@ get_crop_polys <- function(var, season, crops_dir, ag_by_crop_dir){
   return(polys_all)
 }
 
-# Choose a crop ----------------------------------------------------------------
-# cult <- 'Persea americana' 
-# var <- 'Aguacate'
-# safe_var_name <- var
-# 
-cult <- 'Phaseolus vulgaris' 
-var <- 'Frijol'
-safe_var_name <- var
-
-cult <- 'Capsicum annuum' 
-var <- 'Pimiento'
-safe_var_name <- 'Chile.verde'
-
-# cult <- 'Cucumis melo' # melón
-# var <- 'Melón'
-# 
-# cult <- 'Lycopersicon esculentum' # jitomate
-# var <- 'Tomate.rojo..jitomate.'
-# 
-# cult <- 'Cucurbita pepo' # calabacita
-# var <- 'Calabacita'
-# 
-# cult <- 'Citrullus lanatus' # sandia
-# var <- 'Sandía'
-# safe_var_name <- var
-# 
-# cult <- 'Coffea arabica'
-# var <- 'Café cereza'
-# safe_var_name <- 'Café.cereza'
-
-# cult <- 'Mangifera indica'
-# var <- 'Mango'
-# safe_var_name <- var
-# 
-# cult <- 'Agave salmiana'
-# var <- 'Agave'
-# safe_var_name <- var
-
-cultivos_importantes_fp <- 'data/helpers/20_cultivos_mas_importantes_de_Mexico.xlsx'
-cult_df <- readxl::read_excel(cultivos_importantes_fp)
-
-# Work with tables -------------------------------------------------------------
+# Load crop to pollinator table -------------------------------------------------------------
 # 20_cultivos_mas_importantes_de_Mexico.xlsx lists the 20 cultivos with common name and SIAP variable name
 
 # BaseCultivosAsworth_MXname.xlsx matches species to common name
@@ -332,31 +324,221 @@ cult_df <- readxl::read_excel(cultivos_importantes_fp)
 cultivos_nombre_fp <- 'data/helpers/cultivos_to_MXname_Ashworth.xlsx'
 cult_nom_df <- readxl::read_excel(cultivos_nombre_fp)
 
-# Apendice2 links crops to pollinators
-
-
-
-i <- 7
+cultivos_importantes_fp <- 'data/helpers/20_cultivos_mas_importantes_de_Mexico.xlsx'
+cult_df <- readxl::read_excel(cultivos_importantes_fp)
+cult_df <- cult_df %>% 
+  mutate(Especie = str_replace_all(Especie, 'Fragaria vesca', 'Fragaria ssp.'))
 
 # for(i in seq(nrow(cult_df))){
+i <- 10
+(cult <- cult_df[[i, 'Especie']])
+(var <- cult_df[[i, 'Cultivo']])
+(safe_var_name <- cult_df[[i, 'Nombre_SIAP']])
 
-cult <- cult_df[i, 'Especie']
-var <- cult_df[i, 'Cultivo']
-safe_var_name <- cult_df[i, 'Nombre_SIAP']
+# ~ Get pollinator richness for given crop ---------------------------------------
+cultivo_dir <- file.path(pol_pt_dir, 'sdms_by_crop', str_replace_all(cult, ' ', '_'))
+pol_species_fp <- file.path(cultivo_dir, 'pollinator_species.rds')
 
-# Get pollinator points for given crop -----------------------------------------
-fname <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/Apendice2.csv'
-# get_pol_pts_for_crop(fname, pol_pt_dir, cult)
-# Import CSV (sep=';')f rom Apendice2
-df <- read_delim(fname, delim=';', trim_ws=T) %>% 
+if(!file.exists(pol_species_fp)){
+  # Import CSV from Apendice2
+  df <- read_csv(crop_to_pols_fp, trim_ws=T) %>% 
+    fill(Familia, Cultivo) %>% 
+    mutate(genus = str_extract(Polinizador, '^[:upper:]\\S*'), # assume first word is genus
+           family = str_extract(Grupo, '\\S*idae'),
+           order = str_extract(Grupo, '\\S*ptera'), 
+           class = str_extract(Grupo, 'Aves'))
+  
+  # List of unique crops in appendix
+  crops <- df %>% dplyr::select(Cultivo) %>% distinct %>% deframe
+  
+  # Get crop name as listed in appendix
+  idx <- amatch(cult, crops, maxDist=1)
+  if(is.na(idx)){
+    print(str_glue('***WARNING*** "{cult}" ({var}) not found in Appendix table.'))
+  }
+  (cult <- crops[[idx]])
+  
+  # Get list of pollinators for chosen crop
+  (crop_pols <- df %>% 
+      filter(Cultivo == cult) %>% 
+      dplyr::select(Polinizador, genus, family, order, class) )
+  
+  # Create dir for files
+  dir.create(cultivo_dir, recursive=T, showWarnings = F)
+  
+  # Get species names from each pollinator group
+  # fps <- list.files(
+  #   file.path(pol_pt_dir, 'no_duplicates', str_c(dfilt_code, '_gt24perSpecies')), 
+  #   pattern='gpkg$', full.names = T)
+  fps <- list.files(
+    file.path(pol_pt_dir, 'no_duplicates'),
+    pattern='gpkg$', full.names = T)
+  
+  pol_species <- fps %>% 
+    map_dfr(convert_species_names, crop_pols) %>% 
+    tibble() %>% 
+    mutate(sp_nospc = str_replace(species, ' ', '_'))
+  
+  # Save file
+  pol_species %>% saveRDS(pol_species_fp)
+  
+} else {
+  pol_species <- readRDS(pol_species_fp)
+  
+}
+
+# Initialize richness processing ----
+unq_cells = TRUE
+mutually_exclusive_pa = TRUE
+filt_dates = FALSE
+
+# Mexico
+mex <- raster::getData('GADM', country='MEX', level=1,
+               path='data/input_data/context_Mexico') %>% 
+  st_as_sf()
+
+# Load environment variables 
+crop_dir <- file.path('data', 'input_data', 'environment_variables', 'cropped')
+predictors <- raster::stack(list.files(crop_dir, 'tif$', full.names=T))
+
+# Remove layers from predictors
+drop_lst <- c('biomes_CVEECON2', 'biomes_CVEECON1', 'biomes_CVEECON4',
+              'ESACCI.LC.L4.LC10.Map.10m.MEX_2016_2018', 
+              'usv250s6gw_USV_SVI')
+pred <- predictors[[- which(names(predictors) %in% drop_lst) ]]
+
+# directory paths
+unq_code <- ifelse(unq_cells, 'unq_cells', 'unq_pts')
+unq_code <- ifelse(mutually_exclusive_pa, 'unq_cells_exclusive', unq_code)
+dfilt_code <- ifelse(filt_dates, '2000to2020', 'alldates')
+parent_pred_dir <- file.path('data', 'data_out', 'sdm', str_c(unq_code, '_', dfilt_code), 'rf1')
+pol_dir <- 'data/data_out/pollinator_points/no_duplicates'
+
+# Get filepaths for the different outputs for each species
+pol_df <- st_read(file.path(pol_dir, 'combined', str_c(dfilt_code, '_gt24perSpecies.gpkg')))
+pol_sp_fps <- pol_species %>% 
+  mutate(model_fp = file.path(parent_pred_dir, pol_group, 'models', str_c(sp_nospc, '.rds')), 
+         model_eval_fp = file.path(parent_pred_dir, pol_group, 'model_evals', str_c(sp_nospc, '.csv')),
+         model_erf_fp = file.path(parent_pred_dir, pol_group, 'model_evals', str_c(sp_nospc, '.rds')),
+         lik_tif_fp = file.path(parent_pred_dir, pol_group, 'likelihood', str_c(sp_nospc, '.tif')),
+         pa_tif_fp = file.path(parent_pred_dir, pol_group, 'binned_spec_sens', str_c(sp_nospc, '.tif')),
+         varimp_png_fp = file.path('figures', 'sdm', str_c(unq_code, '_', dfilt_code), 
+                                   'rf1', pol_group, 'var_importance', 
+                                   str_c(sp_nospc, '.png'))) %>% 
+  # Filter species/file paths to only those for which we have usable data
+  semi_join(st_drop_geometry(pol_df))
+
+# Create and evaluate model (if not already created) ----
+for( i in 1:nrow(pol_sp_fps)) {
+  model_fp <- pol_sp_fps[[i, 'model_fp']]
+  sp_name <- pol_sp_fps[[i, 'species']]
+  eval_fp <- pol_sp_fps[[i, 'model_eval_fp']]
+  erf_fp <- pol_sp_fps[[i, 'model_erf_fp']]
+  likelihood_fp <- pol_sp_fps[[i, 'lik_tif_fp']]
+  binned_fp <- pol_sp_fps[[i, 'pa_tif_fp']]
+  varimp_fp <- pol_sp_fps[[i, 'varimp_png_fp']]
+  
+  if (file.exists(model_fp)) {
+    print(str_c(sp_name, ': Model already created.'))
+    # next
+  } else {
+    # Filter to species
+    sp_df <- pol_df %>% filter(species == sp_name)
+    
+    if(nrow(sp_df) < 1) {
+      print(str_c(sp_name, ':No rows for the given species.'))
+      next
+    } 
+    
+    # Model
+    print(str_c(sp_name, ': Modelling...\n'))
+    erf <- model_species_rf(sp_df,
+                            pred, 
+                            model_fp, 
+                            sp_name,
+                            eval_fp,
+                            erf_fp,
+                            mutually_exclusive_pa,
+                            unq_cells,
+                            varimp_fp)
+  }
+  
+  # Filepaths  
+  if(file.exists(likelihood_fp) & file.exists(binned_fp)){
+    print(str_c(sp_name, ': Rasters already created.'))
+    next
+  } 
+  
+  # Make TIFs of likelihood and presence/absence
+  print(str_c(sp_name, ': Creating prediction rasters... \n'))
+  predict_distribution_rf(model_fp, erf_fp, likelihood_fp, binned_fp, extent(mex))
+}
+
+# Look at model statistics together
+eval_csv_fps <- pol_sp_fps$model_eval_fp
+eval_tbl_fp <- file.path(cultivo_dir, 
+                         str_c('model_evals_', length(eval_csv_fps), 'species.csv'))
+eval_tbl <- eval_csv_fps %>% purrr::map_dfr(read.csv)
+eval_tbl %>% write_csv(eval_tbl_fp)
+
+# Sum to richness ----
+# Likelihood
+sp_fps <- pol_sp_fps$lik_tif_fp
+
+rich_fp_prefix <- file.path(cultivo_dir,
+                              str_glue('Likhd_rich_{dfilt_code}_{length(sp_fps)}species'))
+rich_plot_fp <-str_glue('{rich_fp_prefix}.png')
+rich_tif_fp <- str_glue('{rich_fp_prefix}.tif')
+  
+stack_sdms(sp_fps, rich_tif_fp, rich_plot_fp, mex)
+ 
+# Presence/Absence
+sp_fps <- pol_sp_fps$pa_tif_fp
+
+rich_fp_prefix <- file.path(cultivo_dir, 
+                              str_glue('PA_rich_{dfilt_code}_{length(sp_fps)}species'))
+rich_tif_fp <- str_glue('{rich_fp_prefix}.tif')
+rich_plot_fp <-str_glue('{rich_fp_prefix}.png')
+
+stack_sdms(sp_fps, rich_tif_fp, rich_plot_fp, mex)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ~ OLD - Get pollinator points for given crop -----------------------------------------
+ap2_fp <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/Apendice2.csv'
+
+# get_pol_pts_for_crop(ap2_fp, pol_pt_dir, cult)
+
+# Import CSV from Apendice2
+df <- read_csv(ap2_fp, trim_ws=T) %>% 
   fill(Familia, Cultivo) %>% 
   mutate(genus = str_extract(Polinizador, '^[:upper:]\\S*'), # assume first word is genus
          family = str_extract(Grupo, '\\S*idae'),
          order = str_extract(Grupo, '\\S*ptera'), 
          class = str_extract(Grupo, 'Aves'))
 
-# test <- df %>% dplyr::select(Grupo) %>% distinct
+# List of unique crops in appendix
 crops <- df %>% select(Cultivo) %>% distinct %>% deframe
+
+# Get crop name as listed in appendix
 (cult <- crops[[amatch(cult, crops, maxDist=1)]])
 
 # Get list of pollinators for chosen crop
@@ -372,7 +554,8 @@ unlink(cultivo_dir, recursive=T)
 dir.create(cultivo_dir)
 
 # Get matching points from each pollinator group
-fps <- list.files(pol_pt_dir, pattern='.geojson', full.names = T)
+fps <- list.files(pol_pt_dir, 'no_duplicates', pattern='.gpkg$', full.names = T)
+out_pts <- filter_pts(fps[[1]], pols, cultivo_dir)
 
 # Run for all relevant states
 out_pts <- tryCatch(
@@ -391,6 +574,65 @@ out_pts <- tryCatch(
 fp_out <- file.path(pol_pt_dir, 'pollinators_by_crop', 
                     str_c(str_replace_all(cult, ' ', '_'), '.geojson'))
 out_pts %>% st_write(fp_out, delete_dsn=T, driver='GeoJSON')
+
+# Get pollinator richness for given crop ---------------------------------------
+ap2_fp <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/Apendice2.csv'
+
+# Import CSV from Apendice2
+df <- read_csv(ap2_fp, trim_ws=T) %>% 
+  fill(Familia, Cultivo) %>% 
+  mutate(genus = str_extract(Polinizador, '^[:upper:]\\S*'), # assume first word is genus
+         family = str_extract(Grupo, '\\S*idae'),
+         order = str_extract(Grupo, '\\S*ptera'), 
+         class = str_extract(Grupo, 'Aves'))
+
+# List of unique crops in appendix
+crops <- df %>% select(Cultivo) %>% distinct %>% deframe
+
+# Get crop name as listed in appendix
+(cult <- crops[[amatch(cult, crops, maxDist=1)]])
+
+# Get list of pollinators for chosen crop
+(pols <- df %>% 
+    filter(Cultivo == cult) %>% 
+    dplyr::select(Polinizador, genus, family, order, class) )
+
+# Get pollinator richness ----
+# Create dir for files
+cultivo_dir <- file.path(pol_pt_dir, 'sdms_by_crop', 
+                         str_replace_all(cult, ' ', '_'))
+dir.create(cultivo_dir, recursive=T, showWarnings = F)
+
+# Get species names from each pollinator group
+fps <- list.files(pol_pt_dir, pattern='gpkg$', full.names = T)
+out_pts <- fps %>% 
+  map_dfr(convert_species_names, pols) %>% 
+  mutate(sp_nospc = str_replace(species, ' ', '_'))
+
+# Save file
+fp_out <- file.path(cultivo_dir, 'pollinator_species.rds')
+out_pts %>% saveRDS(fp_out)
+
+# Input pollinator richness 
+unq_code <- 'unq_cells_exclusive'
+dfilt_code <- 'alldates'
+pred_dir <- here::here('data', 'data_out', 'sdm', 
+                       str_c(unq_code, '_', dfilt_code), 'rf1')
+
+# List all available rasters
+fps <- list.files(pred_dir, pattern='tif$', recursive=T, full.names=T) %>% 
+  str_subset('likelihood')
+
+# Filter to only those that match the pollinator species list
+rich_fps <- out_pts$sp_nospc %>% 
+  map(~str_subset(.y, .x), fps) %>% 
+  flatten_chr()
+
+
+
+
+
+
 
 # Get crop polygons ------------------------------------------------------------
 season <- 'otoperen'
