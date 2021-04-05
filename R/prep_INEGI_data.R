@@ -1,6 +1,6 @@
 # Load libraries ----
+box::use(R/functions[...])
 library(sf)
-library(magrittr)
 library(rvest)
 library(tools)
 library(mapview)
@@ -50,7 +50,7 @@ polys_nom <- st_read(f.usv, crs=6362) %>%
 # Merge Nómada with Agriculture
 polys_nom %<>% 
   mutate(TIPAGES='AGRICULTURA NÓMADA', TIP_CUL1='NÓMADA') %>% 
-  select(!NOM)
+  dplyr::select(!NOM)
 polys <- list(polys_ag, polys_nom) %>% 
   mapedit:::combine_list_of_sf() %>% 
   st_make_valid
@@ -104,7 +104,7 @@ inegi_polys %>%
 mun_for_join <- munis %>%
   mutate(CVE_ENT=as.integer(CVE_ENT),
          CVE_MUN=as.integer(CVE_MUN)) %>% 
-  select(-AREA, -PERIMETER, -COV_, -COV_ID)
+  dplyr::select(-AREA, -PERIMETER, -COV_, -COV_ID)
 
 inegi_polys <- st_intersection(polys, mun_for_join)
 st_write(inegi_polys, 'data/data_out/polys_ag_INEGI.geojson', delete_dsn=T)
@@ -130,19 +130,28 @@ estado = 'PUE'
 # Separate by muni
 remove_FMG_from_ag_INEGI_largefile(estado, inegi_polys, fmg_dir, municipios=munis)
 
-# Join SIAP crop stats to polygons ---------------------------------------------
+# ! Join SIAP crop stats to polygons ---------------------------------------------
+# This section creates the polygons pcts_by_state/inegi_pcts_[season]_[est].geojson 
+# that are used in process_agricultural_polys.R
 load("data/data_out/r_data/area_sembrada_by_season_2019.RData")
 
-join_siap_crop_stats_to_polys <- function(estado){
+join_siap_crop_stats_to_polys <- function(estado, 
+                                          est_to_cve, 
+                                          fmg_dir, 
+                                          munis, 
+                                          area_cult_season, 
+                                          season){
+  
   cve_ent <- est_to_cve[[estado]]
   final_fp_out <- file.path('data/data_out/polys_ag_INEGI_wFMG_pcts', 
-                            str_c('inegi_pcts_primperen19_', estado, '.geojson'))
+                            'pcts_by_state', 
+                            str_c('inegi_pcts_', season, '19_', estado, '.gpkg'))
   if (file.exists(final_fp_out)) return(final_fp_out)
   
   # Add polys from FMG with pct == 1.0 ----
   sup_fmg <- 
     try({
-      sup_fmg <- load_and_preprocess_fmg(estado, fmg_dir, T, munis, prefix='fmg_siap15_') %>% 
+      sup_fmg <- load_and_preprocess_fmg(estado, fmg_dir, T, munis) %>% 
         mutate(CVE_MUN = as.integer(CVE_MUN),
                CVE_ENT = as.integer(CVE_ENT)) %>% 
         filter(CVE_ENT == as.integer(cve_ent))
@@ -152,18 +161,19 @@ join_siap_crop_stats_to_polys <- function(estado){
         sup_fmg <- sup_fmg %>%
           rename('area' = 'area_ha')
       })
+      
       sup_fmg <- sup_fmg %>%
         mutate(CULTIVO = 
                  stringi::stri_trans_general(str=CULTIVO, id='Latin-ASCII') %>%
-                 str_trim %>%
-                 str_to_lower,
+                 stringr::str_trim() %>%
+                 stringr::str_to_lower(),
                'Frijol' = recode(CULTIVO, 'frijol' = 1.0, .default=NA_real_), 
                'Maíz grano' = recode(CULTIVO, 'maiz grano' = 1.0, .default=NA_real_), 
                'Sorgo grano' = recode(CULTIVO, 'sorgo grano' = 1.0, .default=NA_real_),
                'Trigo grano' = recode(CULTIVO, 'trigo grano' = 1.0, .default=NA_real_),
                count_crops = 1, 
                total_sembrada = area) %>% 
-        select(-contains(c('CULTIVO', 'NOM_MUN', 'DELEGACIÓN', 'Name', 'NOM_ENT', 'CVEGEO')))
+        dplyr::select(-contains(c('CULTIVO', 'NOM_MUN', 'DELEGACIÓN', 'Name', 'NOM_ENT', 'CVEGEO')))
     })
   
   # Ag polys ----
@@ -183,34 +193,34 @@ join_siap_crop_stats_to_polys <- function(estado){
   
   # SIAP stats to percents ------
   # Filter [primavera] to state, remove and columns with all NA values
-  df <- area_cult_primperen %>% 
-    filter(CVE_ENT==cve_ent) %>% 
-    select_if(~sum(!is.na(.)) > 0)
+  df <- area_cult_season %>% 
+    filter(CVE_ENT == cve_ent) %>% 
+    dplyr::select_if(~sum(!is.na(.)) > 0)
   
   # Remove FMG columns if FMG data exists
   if(class(sup_fmg) != 'try-error'){
     df <- df %>% 
-      select(!contains(c('maíz', 'frijol', 'sorgo', 'trigo', 'triticale'))) 
+      dplyr::select(!contains(c('maíz', 'frijol', 'sorgo', 'trigo', 'triticale'))) 
   }
   
   # List columns
   vars <- df %>% 
-    select(-CVE_ENT:-total_sembrada) %>% 
+    dplyr::select(-CVE_ENT:-total_sembrada) %>% 
     colnames()
   
   # Get new total area 
   df$total_noFMG <- df %>% 
-    select(all_of(vars)) %>% 
+    dplyr::select(all_of(vars)) %>% 
     rowSums(na.rm=T)
-  df %<>% relocate(total_noFMG, .after=total_sembrada)
+  df <- df %>% relocate(total_noFMG, .after=total_sembrada)
   
   # Get number of different crops planted
   df$count_crops <- df %>% 
-    select(all_of(vars)) %>% 
-    is.na %>% 
+    dplyr::select(all_of(vars)) %>% 
+    is.na() %>% 
     `!` %>% 
     rowSums
-  df %<>% relocate(count_crops, .before=total_sembrada)
+  df <- df %>% relocate(count_crops, .before=total_sembrada)
   
   # Get percent of agricultural land of each crop 
   pct_sembrada_noFMG <- df %>% 
@@ -232,15 +242,28 @@ join_siap_crop_stats_to_polys <- function(estado){
   
   # mapview(sup_new) #+ mapview(sup_fmg)
   
-  # SAVE ----
-  sup_new %>% 
-    st_write(final_fp_out, delete_dsn=T)
+  # SAVE 
+  sup_new %>% st_write(final_fp_out, delete_dsn=T)
+  
   return(TRUE)
 }
 
 estado <- 'ZAC'
+season <- 'peren'
+join_siap_crop_stats_to_polys(estado, 
+                              est_to_cve, 
+                              fmg_dir, 
+                              munis, 
+                              area_cult_peren, 
+                              season)
+
 for(estado in names(est_to_cve)){
-  join_siap_crop_stats_to_polys(estado)
+  join_siap_crop_stats_to_polys(estado, 
+                                est_to_cve, 
+                                fmg_dir, 
+                                munis, 
+                                area_cult_peren, 
+                                season)
 }
 
 
@@ -297,7 +320,7 @@ cve_mun <- 71
 fmg_1 <- st_read(file.path('data/input_data/SIAP/frijol_maiz_granos', 
                            str_c('ESA_PV2015_', estado, '.geojson')))  %>% 
   rename('NOM_ENT' = 'DELEGACIÓN') %>% 
-  select(CULTIVO, CVE_ENT, CVE_MUN, NOM_ENT, NOM_MUN, area_ha) %>% 
+  dplyr::select(CULTIVO, CVE_ENT, CVE_MUN, NOM_ENT, NOM_MUN, area_ha) %>% 
   mutate(CVEGEO = str_c(str_pad(CVE_ENT,2), str_pad(CVE_MUN, 3, pad='0')))
 fmg_2 <- st_read(file.path('data/data_out/polys_fmg', 
                            str_c('fmg_siap15_', estado, '.geojson'))) 
@@ -326,20 +349,20 @@ cve_mun <- c(6, 10, 34)
 fmg_1 <- st_read(file.path('data/input_data/SIAP/frijol_maiz_granos', 
                            str_c('ESA_PV2015_', estado, '.geojson')))  %>% 
   rename('NOM_ENT' = 'DELEGACIÓN') %>% 
-  select(CULTIVO, CVE_ENT, CVE_MUN, NOM_ENT, NOM_MUN, area_ha) %>% 
+  dplyr::select(CULTIVO, CVE_ENT, CVE_MUN, NOM_ENT, NOM_MUN, area_ha) %>% 
   mutate(CVEGEO = str_c(str_pad(CVE_ENT,2), str_pad(CVE_MUN, 3, pad='0')), 
          CVE_ENT = as.integer(CVE_ENT), 
          CVE_MUN = as.integer(CVE_MUN),
          CULTIVO = 
            stringi::stri_trans_general(str=CULTIVO, id='Latin-ASCII') %>%
            str_trim %>%
-           str_to_lower)
+           stringr::str_to_lower)
 fmg_2 <- st_read(file.path('data/data_out/polys_fmg', 
                            str_c('fmg_siap15_', estado, '.geojson'))) %>% 
   mutate(CULTIVO = 
            stringi::stri_trans_general(str=CULTIVO, id='Latin-ASCII') %>%
            str_trim %>%
-           str_to_lower, 
+           stringr::str_to_lower, 
          CVE_ENT = as.integer(CVE_ENT), 
          CVE_MUN = as.integer(CVE_MUN))
 
@@ -376,20 +399,20 @@ cve_mun <- c(42,51)
 fmg_1 <- st_read(file.path('data/input_data/SIAP/frijol_maiz_granos', 
                            str_c('ESA_PV2015_', estado, '.geojson')))  %>% 
   rename('NOM_ENT' = 'DELEGACIÓN') %>% 
-  select(CULTIVO, CVE_ENT, CVE_MUN, NOM_ENT, NOM_MUN, area_ha) %>% 
+  dplyr::select(CULTIVO, CVE_ENT, CVE_MUN, NOM_ENT, NOM_MUN, area_ha) %>% 
   mutate(CVEGEO = str_c(str_pad(CVE_ENT,2), str_pad(CVE_MUN, 3, pad='0')), 
          CVE_ENT = as.integer(CVE_ENT), 
          CVE_MUN = as.integer(CVE_MUN),
          CULTIVO = 
            stringi::stri_trans_general(str=CULTIVO, id='Latin-ASCII') %>%
            str_trim %>%
-           str_to_lower)
+           stringr::str_to_lower)
 fmg_2 <- st_read(file.path('data/data_out/polys_fmg', 
                            str_c('fmg_siap15_', estado, '.geojson'))) %>% 
   mutate(CULTIVO = 
            stringi::stri_trans_general(str=CULTIVO, id='Latin-ASCII') %>%
            str_trim %>%
-           str_to_lower, 
+           stringr::str_to_lower, 
          CVE_ENT = as.integer(CVE_ENT), 
          CVE_MUN = as.integer(CVE_MUN))
 
@@ -426,20 +449,20 @@ cve_mun <- c(100, 149)
 fmg_1 <- st_read(file.path('data/input_data/SIAP/frijol_maiz_granos', 
                            str_c('ESA_PV2015_', estado, '.geojson')))  %>% 
   rename('NOM_ENT' = 'DELEGACIÓN') %>% 
-  select(CULTIVO, CVE_ENT, CVE_MUN, NOM_ENT, NOM_MUN, area_ha) %>% 
+  dplyr::select(CULTIVO, CVE_ENT, CVE_MUN, NOM_ENT, NOM_MUN, area_ha) %>% 
   mutate(CVEGEO = str_c(str_pad(CVE_ENT,2), str_pad(CVE_MUN, 3, pad='0')), 
          CVE_ENT = as.integer(CVE_ENT), 
          CVE_MUN = as.integer(CVE_MUN),
          CULTIVO = 
            stringi::stri_trans_general(str=CULTIVO, id='Latin-ASCII') %>%
            str_trim %>%
-           str_to_lower)
+           stringr::str_to_lower)
 fmg_2 <- st_read(file.path('data/data_out/polys_fmg', 
                            str_c('fmg_siap15_', estado, '.geojson'))) %>% 
   mutate(CULTIVO = 
            stringi::stri_trans_general(str=CULTIVO, id='Latin-ASCII') %>%
            str_trim %>%
-           str_to_lower, 
+           stringr::str_to_lower, 
          CVE_ENT = as.integer(CVE_ENT), 
          CVE_MUN = as.integer(CVE_MUN))
 
@@ -523,13 +546,13 @@ pts_cult <- st_read(f.usv, crs=6362)
 colnames(pts_cult)
 # Decode cultivos for most important pollinator crops
 key <- read_csv(file.path(data_dir, 'metadatos', 'INEGI_codes.csv'))
-key %<>% pmap(~set_names(..2, ..1)) %>% unlist() %>% 
+key <- key %>% pmap(~set_names(..2, ..1)) %>% unlist() %>% 
   c(.default = NA_character_)
-pts_cult %<>% mutate(Culti1=recode(Culti1, !!!key),
+pts_cult <- pts_cult %>% mutate(Culti1=recode(Culti1, !!!key),
                      Culti2=recode(Culti2, !!!key),
                      Culti3=recode(Culti3, !!!key))
 # Look at numbers of points per important crop
-cults <- pts_cult %>% select(starts_with('Culti')) 
+cults <- pts_cult %>% dplyr::select(starts_with('Culti')) 
 st_geometry(cults) <- NULL
 culti_ct <- cults %>% 
   gather('name', 'cultivo') %>% 

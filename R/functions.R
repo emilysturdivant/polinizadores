@@ -2,12 +2,12 @@
 library(sf)
 library(raster)
 library(stars)
-library(tidyverse)
-library(magrittr)
+library(dismo)
 library(rvest)
 library(tools)
 library(mapview)
 library(units)
+library(tidyverse)
 
 # Functions ----
 #' @export
@@ -34,14 +34,14 @@ load_kmz_as_sf <- function(kmz_url, data_dir, out_fp, col_types=NULL){
   
   # Convert KML description field to DF
   df <- sf$description %>%
-    map_dfr(html_to_df) 
+    purrr::map_dfr(html_to_df) 
   if(length(col_types)>0){
-    df %<>% 
+    df <- df %>% 
       type_convert(col_types=col_types, trim_ws=T)
   }
   
   # Replace KML variables with DF
-  sf %<>%
+  sf <- sf %>%
     dplyr::select(Name) %>%
     cbind(df) %>%
     sf::st_zm(drop=T, what='ZM') %>% 
@@ -127,16 +127,21 @@ preprocess_fmg <- function(sup_frij_gran, munis){
 }
 
 #' @export
-load_and_preprocess_fmg <- function(estado_code, data_dir, return_df, municipios, fp_fmg, prefix='ESA_PV2015_'){
+load_and_preprocess_fmg <- function(estado_code, data_dir, return_df, 
+                                    municipios, fp_fmg, prefix='ESA_PV2015_'){
   # Get filename
   if(missing(fp_fmg)){
-    fp_fmg <- file.path(data_dir, stringr::str_c(prefix, estado_code, '.geojson'))
+    fp_fmg <- file.path(data_dir, 
+                        stringr::str_c(prefix, estado_code, '.geojson'))
+    print(str_glue("fp_fmg not supplied so we'll try {fp_fmg}"))
   }
   
   if(file.exists(fp_fmg)){
     # Read file
     sup_frij_gran <- sf::st_read(fp_fmg) 
   } else {
+    print(str_glue("{fp_fmg} doesn't exist"))
+    
     try({
       # Download and convert from KMZ
       url_fmg <- stringr::str_c('http://infosiap.siap.gob.mx/gobmx/datosAbiertos/', 
@@ -199,7 +204,7 @@ remove_FMG_from_ag_by_state <- function(estado, ag_dir, fmg_dir, out_dir, states
   
   # Load specific zone from ag data and specific state from FMG
   ag <- load_and_preprocess_ag(region, ag_dir)
-  sup_fmg <- load_and_preprocess_fmg(estado, fmg_dir, T, municipios, prefix='fmg_siap15_')
+  sup_fmg <- load_and_preprocess_fmg(estado, fmg_dir, T, municipios)
   
   # Get CVE for state of FMG data
   cve_ent <- sup_fmg %>% 
@@ -229,7 +234,7 @@ remove_FMG_from_ag_INEGI <- function(estado, ag, fmg_dir, out_dir){
   if (file.exists(fp_out)) return(fp_out)
   
   # Load specific state from FMG
-  sup_fmg <- load_and_preprocess_fmg(estado, fmg_dir, T, municipios, prefix='fmg_siap15_')
+  sup_fmg <- load_and_preprocess_fmg(estado, fmg_dir, T, municipios)
   
   # Get CVE for state of FMG data
   cve_ent <- sup_fmg %>% 
@@ -293,13 +298,13 @@ clip_out_polys_from_ag <- function(ag_by_munis, spec_polys, dissolve_by){
     
     ag_noFMG <- ag_noFMG %>%
       dplyr::group_by %>% 
-      summarise(across(all_of(vars))) %>% 
-      ungroup
+      summarise(dplyr::across(all_of(vars))) %>% 
+      dplyr::ungroup
   } else {
     ag_noFMG <- ag_noFMG %>%
       dplyr::group_by(CVE_ENT, CVE_MUN, {{dissolve_by}}) %>% 
       summarise %>% 
-      ungroup
+      dplyr::ungroup
   }
 
   # Tidy the polygons - drop crumbs and fill pinholes
@@ -346,7 +351,7 @@ remove_FMG_from_ag_INEGI_largefile <- function(estado, ag, fmg_dir, out_dir, mun
   # Load specific state from FMG
   sup_fmg <- 
     try({
-      load_and_preprocess_fmg(estado, fmg_dir, T, municipios, prefix='fmg_siap15_') %>% 
+      load_and_preprocess_fmg(estado, fmg_dir, T, municipios) %>% 
       dplyr::mutate(CVE_MUN = as.integer(CVE_MUN),
              CVE_ENT = as.integer(CVE_ENT)) %>% 
       dplyr::filter(CVE_ENT == as.integer(cve_ent))
@@ -356,8 +361,8 @@ remove_FMG_from_ag_INEGI_largefile <- function(estado, ag, fmg_dir, out_dir, mun
     ag <- ag %>% 
       dplyr::group_by(CVE_ENT, CVE_MUN, CLAVE) %>% 
       summarize %>% 
-      ungroup %>% 
-      st_make_valid
+      dplyr::ungroup %>% 
+      sf::st_make_valid
     
     # Get area for new polygons
     ag$area <- ag %>% 
@@ -412,8 +417,8 @@ remove_FMG_from_ag_INEGI_largefile <- function(estado, ag, fmg_dir, out_dir, mun
     dplyr::filter(CVE_MUN %in% cve_muns_agonly) %>% 
     dplyr::group_by(CVE_ENT, CVE_MUN, CLAVE) %>% 
     summarize %>% 
-    ungroup %>% 
-    st_make_valid
+    dplyr::ungroup %>% 
+    sf::st_make_valid
 
   # Get area for new polygons
   ag0$area <- ag0 %>% 
@@ -430,7 +435,7 @@ remove_FMG_from_ag_INEGI_largefile <- function(estado, ag, fmg_dir, out_dir, mun
   # Merge files from individual municipios
   fps <- list.files(state_dir, full.names=T)
   ag_noFMG <- fps %>% 
-    lapply(st_read) %>% 
+    lapply(sf::st_read) %>% 
     mapedit:::combine_list_of_sf()
   
   # Save
@@ -453,38 +458,38 @@ model_species_rf <- function(sp_df,
   
   # Convert to coords DF
   sp1 <- sp_df %>% 
-    dplyr::mutate(lon = unlist(map(.$geom, 1)), 
-           lat = unlist(map(.$geom, 2))) %>% 
-    st_drop_geometry() %>% 
+    dplyr::mutate(lon = unlist(purrr::map(.$geom, 1)), 
+                  lat = unlist(purrr::map(.$geom, 2))) %>% 
+    sf::st_drop_geometry() %>% 
     dplyr::select(lon, lat)
   
   # Background points
-  pres_pts <- as_Spatial(sp_df)
+  pres_pts <- sf::as_Spatial(sp_df)
   
   set.seed(10)
   if(mutually_exclusive_pa) {
     
-    backg <- randomPoints(mask = pred, n=1000, p = pres_pts
+    backg <- dismo::randomPoints(mask = pred, n=1000, p = pres_pts
                           # prob = T, # use mask as sampling bias grid
     )
   } else {
     
-    backg <- randomPoints(pred, n=1000) 
+    backg <- dismo::randomPoints(pred, n=1000) 
   }
   
   backg <- backg %>% 
-    as_tibble() %>% 
-    rename(lon = 'x', lat = 'y')
+    tibble::as_tibble() %>% 
+    dplyr::rename(lon = 'x', lat = 'y')
   
   # Split presence into training and testing 
   set.seed(0)
-  group <- kfold(sp1, 5)
+  group <- dismo::kfold(sp1, 5)
   train_1 <- sp1[group != 1, ]
   test_1 <- sp1[group == 1, ]
   
   # Split background into training and testing
   set.seed(0)
-  group <- kfold(backg, 5)
+  group <- dismo::kfold(backg, 5)
   train_0 <- backg[group != 1, ]
   test_0 <- backg[group == 1, ]
   
@@ -495,7 +500,7 @@ model_species_rf <- function(sp_df,
   
   pb_train <- c(rep(1, nrow(train_1)), rep(0, nrow(train_0)))
   envtrain1 <- data.frame( cbind(pa = pb_train, envtrain1) ) %>% 
-    dplyr::mutate(across(starts_with(c('biomes', 'ESA', 'usv')), as.factor)) %>% 
+    dplyr::mutate(dplyr::across(starts_with(c('biomes', 'ESA', 'usv')), as.factor)) %>% 
     dplyr::select(-ID)
   
   # Remove duplicated cells
@@ -507,10 +512,10 @@ model_species_rf <- function(sp_df,
   
   # Testing datasets - get predictors for test presence and background points
   testpres <- data.frame( raster::extract(pred, test_1) ) %>%
-    dplyr::mutate(across(starts_with(c('biomes', 'ESA', 'usv')), as.factor))
+    dplyr::mutate(dplyr::across(starts_with(c('biomes', 'ESA', 'usv')), as.factor))
   
   testbackg <- data.frame( raster::extract(pred, test_0) ) %>%
-    dplyr::mutate(across(starts_with(c('biomes', 'ESA', 'usv')), as.factor))
+    dplyr::mutate(dplyr::across(starts_with(c('biomes', 'ESA', 'usv')), as.factor))
   
   # Set factor levels for test DFs to match training data
   vars <- envtrain %>% dplyr::select(where(is.factor)) %>% tbl_vars
@@ -542,13 +547,13 @@ model_species_rf <- function(sp_df,
   saveRDS(erf, erf_fp)
   
   # Save simple statistics in CSV
-  spc_eval <- tibble(
-    species=sp_name,
-    N_unq_pts=nrow(sp_df),
-    N_unq_cells=nrow(dplyr::filter(envtrain, pa == 1)),
-    np=erf@np, na=erf@na, auc=erf@auc,
-    cor=erf@cor, pcor=erf@pcor, 
-    spec_sens=dismo::threshold(erf, "spec_sens"))
+  spc_eval <- tibble::tibble(
+    species = sp_name,
+    N_unq_pts = nrow(sp_df),
+    N_unq_cells = nrow(dplyr::filter(envtrain, pa == 1)),
+    np = erf@np, na = erf@na, auc = erf@auc,
+    cor = erf@cor, pcor = erf@pcor, 
+    spec_sens = dismo::threshold(erf, "spec_sens"))
   
   spc_eval %>% write_csv(eval_fp)
   
@@ -659,7 +664,7 @@ stack_sdms <- function(sp_fps, rich_tif_fp, rich_plot_fp, mex){
 
 # Initialize regions and states ----
 #' @export
-ag_dir <- 'data/input_data/SIAP/FASII'
+ag_dir <- 'data/input_data/ag_SIAP/FASII'
 
 #' @export
 regions <- c('CW_Col_Jal_Ags_Gto_Mich', 'C_Qro_Hgo_Mex_Tlax_Pue_Mor_DF',
@@ -667,7 +672,7 @@ regions <- c('CW_Col_Jal_Ags_Gto_Mich', 'C_Qro_Hgo_Mex_Tlax_Pue_Mor_DF',
              'NW_BC_BCS_Son_Sin_Nay', 'S_Gro_Oax_Chis', 'SE_Camp_QRoo_Yuc')
 
 #' @export
-fmg_dir <- 'data/input_data/SIAP/frijol_maiz_granos'
+fmg_dir <- 'data/input_data/ag_SIAP/frijol_maiz_granos'
 
 # SIAP FMG state codes
 #' @export

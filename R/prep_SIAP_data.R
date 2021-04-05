@@ -1,17 +1,19 @@
 # SIAP Datos Abiertos page: http://infosiap.siap.gob.mx/gobmx/datosAbiertos.php
 # Catalogos: http://www.agricultura.gob.mx/siap/catalogos
+
 # Load libraries ----
-library(sf)
-library(tidyverse)
-library(magrittr)
-library(rvest)
-library(tools)
-library(mapview)
-library(units)
+box::use(R/functions[get_area_planted])
+
+# library(sf)
+# library(tidyverse)
+# library(rvest)
+# library(tools)
+# library(mapview)
+# library(units)
 
 # Load pre-created objects (from functions.R) ----------------------------------
-load('data/helpers/initial_vars.RData')
-load('data/helpers/functions.RData')
+# load('data/helpers/initial_vars.RData')
+# load('data/helpers/functions.RData')
 out_dir <- 'data/data_out/polys_ag_INEGI_noFMG'
 fmg_dir <- 'data/data_out/polys_fmg'
 
@@ -59,6 +61,7 @@ save(area_cult_peren, area_cult_prim, area_cult_otono, area_cult_primperen,
      area_cult_otoperen, cultivos,
      file = "data/data_out/r_data/area_sembrada_by_season_2019.RData")
 
+area_cult_peren %>% saveRDS("data/data_out/r_data/area_sembrada_peren_2019.RDS")
 area_cult_primperen %>% saveRDS("data/data_out/r_data/area_sembrada_primperen_2019.RDS")
 area_cult_otoperen %>% saveRDS("data/data_out/r_data/area_sembrada_otoperen_2019.RDS")
 
