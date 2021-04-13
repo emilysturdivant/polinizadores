@@ -2,7 +2,9 @@
 # Catalogos: http://www.agricultura.gob.mx/siap/catalogos
 
 # Load libraries ----
-box::use(R/functions[get_area_planted])
+box::use(R/functions[get_area_planted, 
+                     load_and_preprocess_fmg, 
+                     est_to_cve])
 
 # library(sf)
 # library(tidyverse)
@@ -89,6 +91,7 @@ regions %>% sapply(load_and_preprocess_ag, ag_dir, munis, F)
 
 # Load frijol-maiz-granos polygons ---------------------------------------------
 # Download and convert from KMZ
+est_codes <- names(est_to_cve)
 est_codes %>% sapply(load_and_preprocess_fmg, fmg_dir, FALSE, munis)
 
 # Fix Region Lagunera to match the others 

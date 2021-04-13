@@ -9,7 +9,8 @@
 box::use(R/functions[model_species_rf, 
                      predict_distribution_rf, 
                      stack_sdms, 
-                     est_to_cve])
+                     est_to_cve, 
+                     get_crop_polys])
 
 # theme_set(theme_minimal())
 # library(ggnewscale)
@@ -223,104 +224,6 @@ get_pol_pts_for_crop <- function(fname, pol_pt_dir, cult){
   out_pts %>% st_write(fp_out, delete_dsn=T, driver='GeoJSON')
 }
 
-get_crop_polys <- function(var, season, crops_dir, ag_by_crop_dir, est_to_cve){
-  # Get states where crop is grown ----
-  # Load 
-  area_cult_table <- readRDS(file.path("data/data_out/r_data",
-                                       str_c('area_sembrada_', season, '_2019.RDS')))
-  
-  # Get matching crop name
-  vars <- area_cult_table %>% colnames
-  (var <- vars[[stringdist::amatch(var, vars, maxDist=1)]])
-  
-  # Get states where crop is grown
-  state_cves <- area_cult_table %>% 
-    dplyr::filter(across(all_of(var), ~ !is.na(.x))) %>% 
-    dplyr::select(CVE_ENT) %>% 
-    distinct
-  
-  # Get state codes
-  est_to_cve_tbl <- est_to_cve %>% 
-    as_tibble(rownames = 'estado') %>% 
-    dplyr::filter(value %in% state_cves$CVE_ENT)
-  
-  # Get files matching state codes ----
-  filter_polys <- function(fp, var, temp_dir){
-    
-    # Load polygons for state
-    polys <- st_read(fp) %>% 
-      mutate(total_noFMG = as.numeric(total_noFMG))
-    
-    # Get matching crop name
-    vars <- polys %>% colnames
-    print(var <- vars[[stringdist::amatch(var, vars, maxDist=4)]])
-    
-    # Filter to crop of interest
-    out_polys <- polys %>%
-      dplyr::filter(across(all_of(var), ~ !is.na(.x))) %>%
-      dplyr::select(CVE_ENT:total_noFMG, all_of(var))
-    
-    # Save
-    state <- basename(file_path_sans_ext(fp)) %>% 
-      str_split('_') %>% last %>% last 
-    fp_out <- file.path(temp_dir, str_c(var, '_', state, '.gpkg'))
-    out_polys %>% st_write(fp_out, delete_dsn=T)
-    
-    # Return
-    return(out_polys)
-  }
-  
-  # Create temp dir
-  temp_dir <- file.path(ag_by_crop_dir, 'temp')
-  unlink(temp_dir, recursive=T)
-  dir.create(temp_dir)
-  
-  # List files
-  search_str <- str_c('.*_', season, '.*(', 
-                      str_c(est_to_cve_tbl$estado, collapse='|'), 
-                      ')\\.(gpkg|geojson)')
-  fps <- list.files(crops_dir, pattern=search_str, full.names=T)
-  
-  # Test
-  # fp <- fps[[1]]
-  # polys_crop <- filter_polys(fp, var, temp_dir)
-  
-  # Run for all relevant states
-  polys_all <- tryCatch(
-    {
-      fps %>% 
-        purrr::map(filter_polys, var, temp_dir) %>%
-        mapedit:::combine_list_of_sf()
-    }, 
-    
-    error = function(...){
-      
-      print("\nError combining features. We'll merge those that were already created\n")
-      
-      list.files(temp_dir, pattern='.gpkg', full.names = T) %>% 
-        purrr::map(st_read) %>% 
-        mapedit:::combine_list_of_sf()
-    }
-  )
-  
-  # Change probabilities variable name to be consistent
-  (prob_name <- polys_all %>% colnames %>% nth(9))
-  polys_all[['crop_prob']] <- polys_all[[prob_name]]
-  
-  # Calculate area of crop (instead of percentage)
-  polys_all <- polys_all %>% 
-    dplyr::select(-9) %>% # dplyr::select(matches(prob_name))
-    mutate(total_noFMG = as.numeric(total_noFMG), 
-           crop_area = total_noFMG * crop_prob)
-  
-  # Save
-  fp_out <- file.path(ag_by_crop_dir, 
-                      str_c(prob_name, '_', season, '.gpkg'))
-  polys_all %>% st_write(fp_out, delete_dsn=T)
-  
-  # Return
-  return(polys_all)
-}
 
 # Load crop to pollinator table -------------------------------------------------------------
 # 20_cultivos_mas_importantes_de_Mexico.xlsx lists the 20 cultivos with common name and SIAP variable name
@@ -336,7 +239,7 @@ cult_df <- cult_df %>%
   mutate(Especie = str_replace_all(Especie, 'Fragaria vesca', 'Fragaria ssp.'))
 
 # for(i in seq(nrow(cult_df))){
-i <- 1
+i <- 5
 (cult <- cult_df[[i, 'Especie']])
 (var <- cult_df[[i, 'Cultivo']])
 (safe_var_name <- cult_df[[i, 'Nombre_SIAP']])
@@ -485,6 +388,7 @@ eval_tbl %>% write_csv(eval_tbl_fp)
 
 # Sum to richness ----
 exclude_apis = TRUE
+
 # Likelihood
 sp_fps <- pol_sp_fps$lik_tif_fp
 
@@ -555,23 +459,39 @@ if(!file.exists(fp_out)){
   
 }
 
+library(tmap)
+tmap_mode('view')         
+tm_shape(polys_peren) + tm_polygons(alpha=0.5)
+
 # Simplify - TESTING
-polys_prim <- polys_prim %>% mutate(crop_prob = round(crop_prob, 2))
-pols_diss <- polys_prim %>% group_by(crop_prob) %>% summarise() 
+polys <- polys_peren %>% 
+  mutate(crop_prob = round(crop_prob, 2)) %>% 
+  filter(crop_prob > 0)
+pols_diss <- polys %>% group_by(crop_prob) %>% summarise() 
 pols_diss <- pols_diss %>% nngeo::st_remove_holes(.1) 
-pols_diss <- pols_diss %>% st_simplify(preserveTopology = T, dTolerance=.05) 
-pols_buff <- pols_diss %>% st_buffer(.05) 
-pols_buff <- pols_buff %>% group_by(crop_prob) %>% summarise() %>% 
-  st_buffer(-.049)
-pols_buff <- pols_buff %>% nngeo::st_remove_holes(.1) 
-pols_buff %>% st_write(
-  file.path(cultivo_dir, 'crop_probabilities_primavera_simplifiedpt05.gpkg'),
+pols_dis2 <- pols_diss %>% st_simplify(preserveTopology = T, dTolerance=.005)
+pols_buf1 <- pols_dis2 %>% st_buffer(.005) 
+pols_buf1 <- pols_buf1 %>% group_by(crop_prob) %>% summarise() %>% 
+  st_buffer(-.0049)
+pols_buf1 <- pols_buf1 %>% nngeo::st_remove_holes(.1) 
+pols_buf1 %>% st_write(
+  file.path(cultivo_dir, str_glue('crop_probabilities_{season}_simplified.gpkg')),
   delete_dsn=T)
 
-library(tmap)
-tmap_mode('view')                                                                                                                                     
-tm_shape(pols_diss) + tm_polygons() +
-  tm_shape(pols_buff) + tm_polygons()
+                                                                                                                            
+tm_shape(pols_diss) + tm_polygons(alpha=0.5) +
+  tm_shape(pols_buf1) + tm_polygons(col='crop_prob', alpha=0.5)
+
+# Convert polygons to raster and stack with richness
+polsb <- terra::vect(  as(pols_buf1, 'Spatial'))
+rich <- terra::rast(rich_tif_fp)
+crop_ras <- terra::rasterize(polsb, rich, 'crop_prob', background=0)
+
+c(rich, crop_ras) %>% 
+  terra::writeRaster(
+    file.path(cultivo_dir, str_glue('stack_PArich_crop_prob_{season}_simplified.tif')),
+    overwrite=T
+  )
 
 
 # Load pollinator richness

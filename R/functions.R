@@ -9,6 +9,9 @@ library(mapview)
 library(units)
 library(tidyverse)
 
+#' @export
+box::use(./functions)
+
 # Functions ----
 #' @export
 html_to_df <- function(x){
@@ -441,6 +444,103 @@ remove_FMG_from_ag_INEGI_largefile <- function(estado, ag, fmg_dir, out_dir, mun
   # Save
   ag_noFMG %>% sf::st_write(final_fp_out)
   return(final_fp_out)
+}
+
+#' @export
+get_crop_polys <- function(var, season, crops_dir, ag_by_crop_dir, est_to_cve){
+
+  # Load planted area table (created in prep_SIAP_data.R)
+  area_cult_table <- readRDS(file.path("data/data_out/r_data",
+                                       str_c('area_sembrada_', season, '_2019.RDS')))
+  
+  # Get matching crop name
+  vars <- area_cult_table %>% colnames
+  (var <- vars[[stringdist::amatch(var, vars, maxDist=1)]])
+  
+  # Get states where crop is grown
+  state_cves <- area_cult_table %>% 
+    dplyr::filter(across(all_of(var), ~ !is.na(.x))) %>% 
+    dplyr::select(CVE_ENT) %>% 
+    distinct
+  
+  # Get state codes
+  est_to_cve_tbl <- est_to_cve %>% 
+    as_tibble(rownames = 'estado') %>% 
+    dplyr::filter(value %in% state_cves$CVE_ENT)
+  
+  # Get files matching state codes ----
+  filter_polys <- function(fp, var, temp_dir){
+    
+    # Load polygons for state
+    polys <- st_read(fp) %>% 
+      mutate(total_noFMG = as.numeric(total_noFMG))
+    
+    # Get matching crop name
+    vars <- polys %>% colnames
+    print(var <- vars[[stringdist::amatch(var, vars, maxDist=4)]])
+    
+    # Filter to crop of interest
+    out_polys <- polys %>%
+      dplyr::filter(across(all_of(var), ~ !is.na(.x))) %>%
+      dplyr::select(CVE_ENT:total_noFMG, all_of(var))
+    
+    # Save
+    state <- basename(file_path_sans_ext(fp)) %>% 
+      str_split('_') %>% last %>% last 
+    fp_out <- file.path(temp_dir, str_c(var, '_', state, '.gpkg'))
+    out_polys %>% st_write(fp_out, delete_dsn=T)
+    
+    # Return
+    return(out_polys)
+  }
+  
+  # Create temp dir
+  temp_dir <- file.path(ag_by_crop_dir, 'temp')
+  unlink(temp_dir, recursive=T)
+  dir.create(temp_dir)
+  
+  # List state crop files to load, filter and merge
+  cves_regex <- str_c(est_to_cve_tbl$estado, collapse='|')
+  search_str <- str_c('.*_', season, '.*(', cves_regex, ')\\.(gpkg|geojson)')
+  fps <- list.files(crops_dir, pattern=search_str, full.names=T)
+  
+  # Test
+  # fp <- fps[[1]]
+  # polys_crop <- filter_polys(fp, var, temp_dir)
+  
+  # Get crop polys for all relevant states and merge
+  polys_all <- tryCatch(
+    {
+      fps %>% 
+        purrr::map(filter_polys, var, temp_dir) %>%
+        mapedit:::combine_list_of_sf()
+    }, 
+    
+    error = function(...){
+      print("\nError combining features. We'll merge those that were already created\n")
+      
+      list.files(temp_dir, pattern='.gpkg', full.names = T) %>% 
+        purrr::map(st_read) %>% 
+        mapedit:::combine_list_of_sf()
+    }
+  )
+  
+  # Change probabilities variable name to be consistent
+  prob_name <- polys_all %>% colnames %>% nth(9)
+  polys_all[['crop_prob']] <- polys_all[[prob_name]]
+  
+  # Calculate area of crop (instead of percentage)
+  polys_all <- polys_all %>% 
+    dplyr::select(-9) %>% # dplyr::select(matches(prob_name))
+    dplyr::mutate(total_noFMG = as.numeric(total_noFMG), 
+           crop_area = total_noFMG * crop_prob)
+  
+  # Save
+  fp_out <- file.path(ag_by_crop_dir, str_c(prob_name, '_', season, '.gpkg'))
+  polys_all %>% st_write(fp_out, delete_dsn=T)
+  
+  # Return
+  return(polys_all)
 }
 
 #' @export
