@@ -92,7 +92,7 @@ regions %>% sapply(load_and_preprocess_ag, ag_dir, munis, F)
 # Load frijol-maiz-granos polygons ---------------------------------------------
 # Download and convert from KMZ
 est_codes <- names(est_to_cve)
-est_codes %>% sapply(load_and_preprocess_fmg, fmg_dir, FALSE, munis)
+est_codes %>% sapply(load_and_preprocess_fmg, fmg_dir, FALSE, munis, prefix='fmg_siap15_')
 
 # Fix Region Lagunera to match the others 
 estado = 'RL'
@@ -110,13 +110,13 @@ sup_fmg$area_ha <- sup_fmg %>%
   set_units('ha') %>% 
   set_units(NULL)
 
-fp_fmg <- file.path(fmg_dir, str_c('ESA_PV2015_', estado, '.geojson'))
+fp_fmg <- file.path(fmg_dir, str_c('fmg_siap15_', estado, '.geojson'))
 st_write(sup_fmg, fp_fmg, delete_dsn=T)
 
 # Merge parts of RL into respective states
-sup_fmgR <- load_and_preprocess_fmg('RL', fmg_dir, T, munis)
+sup_fmgR <- load_and_preprocess_fmg('RL', fmg_dir, T, munis, prefix='fmg_siap15_')
 
-sup_fmgD <- load_and_preprocess_fmg('DGO', fmg_dir, T, munis) 
+sup_fmgD <- load_and_preprocess_fmg('DGO', fmg_dir, T, munis, prefix='fmg_siap15_') 
 mapview(sup_fmgD)
 dur <- sup_fmgR %>% filter(DELEGACIÓN=='Durango')
 sup_fmg <- list(sup_fmgD, dur) %>% 
@@ -124,14 +124,14 @@ sup_fmg <- list(sup_fmgD, dur) %>%
 fp_fmg <- file.path(fmg_dir, str_c('ESA_PV2015_', 'DGO', '.geojson'))
 st_write(sup_fmg, fp_fmg, delete_dsn=T)
 
-sup_fmgZ <- load_and_preprocess_fmg('ZAC', fmg_dir, T, munis)
+sup_fmgZ <- load_and_preprocess_fmg('ZAC', fmg_dir, T, munis, prefix='fmg_siap15_')
 polys <- sup_fmgR %>% filter(DELEGACIÓN=='Zacatecas')
 sup_fmg <- list(sup_fmgZ, polys) %>% 
   mapedit:::combine_list_of_sf()
 fp_fmg <- file.path(fmg_dir, str_c('ESA_PV2015_', 'ZAC', '.geojson'))
 st_write(sup_fmg, fp_fmg, delete_dsn=T)
 
-sup_fmgC <- load_and_preprocess_fmg('COAH', fmg_dir, T, munis) 
+sup_fmgC <- load_and_preprocess_fmg('COAH', fmg_dir, T, munis, prefix='fmg_siap15_') 
 polys <- sup_fmgR %>% filter(DELEGACIÓN=='Zacatecas')
 sup_fmg <- list(sup_fmgZ, polys) %>% 
   mapedit:::combine_list_of_sf()
@@ -153,15 +153,74 @@ sup_fmg$area <- sup_fmg %>%
 fp_fmg <- file.path(fmg_dir, str_c('fmg_siap15_', estado, '.geojson'))
 st_write(sup_fmg, fp_fmg, delete_dsn=T)
 
-# Save frijol polys separately -------------------------------------------------
-# sup_frijol <- sup_frij_gran %>% 
-#   filter(CULTIVO=='Frijol') %>% 
-#   mutate(Frijol = recode(CULTIVO, 'Frijol'=1.0))
-# fp <- file.path(data_dir, 'frijol', str_c('ESA_PV2015_frijol_', estado_code, '.geojson'))
-# st_write(sup_frijol, fp, delete_dsn=T)
+# Merge frijol polygons ----
+simplify_crop_polys <- function(polys, out_fp=NA, tolerance=0.001) {
+  # Simplify polygons for mapping at national scale
+  # Polygons in geographic projection
+  
+  pols_diss <- polys %>%
+    group_by(crop_prob) %>% summarise() 
+  pols_dis2 <- pols_diss %>% nngeo::st_remove_holes(.1) 
+  # pols_dis2 <- pols_dis2 %>% st_simplify(preserveTopology = T, dTolerance=0.0005)
+  pols_buf1 <- pols_dis2 %>% st_buffer(tolerance) 
+  pols_buf1 <- pols_buf1 %>% 
+    group_by(crop_prob) %>% summarise() %>% 
+    st_buffer(-tolerance-0.0001)
+  pols_buf1 <- pols_buf1 %>% nngeo::st_remove_holes(.1) 
+  pols_buf1 <- pols_buf1 %>% st_simplify(preserveTopology = T, dTolerance=0.0005)
+  
+  if(!is.na(out_fp)) {
+    pols_buf1 %>% st_write(out_fp, delete_dsn=T)
+  }
+  
+  return(pols_buf1)
+}
 
-# Save
-# save(sup_frij_gran, file='data/data_out/r_data/sup_frij_gran.RData')
+load_and_simplify <- function(fp){
+  
+  # Function to rename sf geometry column
+  # from https://gis.stackexchange.com/questions/386584/sf-geometry-column-naming-differences-r
+  rename_geometry <- function(g, name){
+    current = attr(g, "sf_column")
+    names(g)[names(g)==current] = name
+    st_geometry(g)=name
+    g
+  }
+  
+  # Load polygons
+  polys <- st_read(fp)
+  
+  # Filter to Frijol
+  polys <- polys %>% 
+    filter(stringr::str_detect(CULTIVO, regex('Frijol', ignore_case=T)))
+  
+  # Set crop probability to 1
+  polys <- polys %>% mutate(crop_prob = 1.0)
+  
+  # Standardize sf geometry column name
+  polys <- rename_geometry(polys, 'geom')
+  
+  # If there are no frijol polygons in the state, return empty
+  if(nrow(polys) < 1) return(select(polys, crop_prob))
+  
+  # Simplify the polygons
+  polys <- simplify_crop_polys(polys, tolerance=0.001)
+  
+  # Return
+  return(polys)
+}
+
+fps <- list.files(fmg_dir, full.names=T)
+polys_out <- map_dfr(fps, load_and_simplify)
+polys_out %>% st_write('data/data_out/polys_ag_INEGI_wFMG_pcts/specific_crops/Frijol.gpkg', 
+                       delete_dsn=T)
+
+fp <- fps[[28]]
+frij_zac <- load_and_simplify(fps[[28]])
+tm_shape(polys_out) + tm_polygons()
+polys_out <- st_read('data/data_out/polys_ag_INEGI_wFMG_pcts/specific_crops/Frijol.gpkg')
+
+polys_out <- bind_rows(polys_out, frij_zac)
 
 # Extract FMG from general agriculture -----------------------------------------
 for(estado in est_codes){
@@ -240,7 +299,13 @@ ag_pct_cult_noFMG_important %>%
 
 
 # EXTRA: Compare areas for frijol / maiz between polygons and statistics -------
-load('data/data_out/sup_frij_gran.RData')
+
+
+
+
+
+
+
 load("data/data_out/r_data/area_sembrada_by_season.RData")
 
 # Use primavera 
@@ -260,7 +325,7 @@ area_sembrada_FMG <- area_sembrada %>%
                values_to='area_sembrada')
 
 # Join
-ag_FMG <- left_join(area_sembrada_FMG, sfg, by=c('CVE_MUN', 'CULTIVO'))
+ag_FMG <- left_join(area_sembrada_FMG, sup_frij_gran, by=c('CVE_MUN', 'CULTIVO'))
 
 # EXTRA: Drop columns with only NA values --------------------------------------
 ag_cults1 <- ag_cultivos %>% 

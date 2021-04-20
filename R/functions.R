@@ -136,14 +136,14 @@ load_and_preprocess_fmg <- function(estado_code, data_dir, return_df,
   if(missing(fp_fmg)){
     fp_fmg <- file.path(data_dir, 
                         stringr::str_c(prefix, estado_code, '.geojson'))
-    print(str_glue("fp_fmg not supplied so we'll try {fp_fmg}"))
+    print(stringr::str_glue("fp_fmg not supplied so we'll try {fp_fmg}"))
   }
   
   if(file.exists(fp_fmg)){
     # Read file
     sup_frij_gran <- sf::st_read(fp_fmg) 
   } else {
-    print(str_glue("{fp_fmg} doesn't exist"))
+    print(stringr::str_glue("{fp_fmg} doesn't exist"))
     
     try({
       # Download and convert from KMZ

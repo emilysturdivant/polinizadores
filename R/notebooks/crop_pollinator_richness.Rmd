@@ -1,0 +1,177 @@
+---
+title: "Crop pollinator richness"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+date: 2021-04-12
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      fig.align = 'left',
+                      fig.height=4, 
+                      fig.width=8, 
+                      message=FALSE, 
+                      warning=FALSE, 
+                      cache=TRUE)
+
+```
+
+```{r}
+# # Parameters (when running without knitting)
+# To knit from console and programmatically specify parameters: rmarkdown::render(here::here('R', 'notebooks', 'richness_combined_zones', 'richness_by_combined_zones.Rmd'), params=params, output_file='richness_study.html')
+if(!exists('params')){
+  params <- list(
+    exclude_apis = TRUE,
+    unq_cells = TRUE,
+    mutually_exclusive_pa = TRUE,
+    filt_dates = FALSE
+    )
+}
+```
+
+### Load libraries and initialize variables
+
+```{r initialize, message=FALSE}
+library(tidyverse)
+library(patchwork)
+library(rcompanion)
+options(box.path = getwd())
+box::use(R/functions[get_crop_polys, est_to_cve],
+         select = dplyr[select])
+
+# sessionInfo()
+
+# Directory paths
+crops_dir <- 'data/data_out/polys_ag_INEGI_wFMG_pcts/pcts_by_state'
+ag_by_crop_dir <- 'data/data_out/polys_ag_INEGI_wFMG_pcts/specific_crops'
+pol_pt_dir <- 'data/data_out/pollinator_points'
+
+# Mexico
+mex <- raster::getData('GADM', country='MEX', level=1,
+                       path='data/input_data/context_Mexico') %>% 
+  sf::st_as_sf()
+
+# Cultivos dataframe
+cultivos_importantes_fp <- 'data/helpers/20_cultivos_mas_importantes_de_Mexico.xlsx'
+cult_df <- readxl::read_excel(cultivos_importantes_fp)
+peren_crops <- c('Aguacate', 'Papaya', 'Guayaba', 'Durazno', 
+                 'Cacao', 'Café.cereza', 'Mango', 'Manzana', 'Tuna', 'Naranja')
+cult_df <- cult_df %>% 
+  mutate(Especie = str_replace_all(Especie, 'Fragaria vesca', 'Fragaria ssp.'),
+         temporada = ifelse(Nombre_SIAP %in% peren_crops, 'perenne', NA))
+
+```
+
+Parameters:
+
+* exclude_apis: **"`r params$exclude_apis`"**
+* unq_cells: **`r params$unq_cells`**
+* mutually_exclusive_pa: **`r params$mutually_exclusive_pa`**
+* filt_dates: **`r params$filt_dates`**
+
+### For each crop...
+
+```{r pre-process}
+i <- 2
+
+# for(i in seq(nrow(cult_df))){
+(cult <- cult_df[[i, 'Especie']])
+(var <- cult_df[[i, 'Cultivo']])
+safe_var_name <- cult_df[[i, 'Nombre_SIAP']]
+temporada <- cult_df[[i, 'temporada']]
+cultivo_dir <- file.path(pol_pt_dir, 'sdms_by_crop', str_replace_all(cult, ' ', '_'))
+
+# Filename for richness tif
+pattern <- ifelse(params$exclude_apis, 
+                  str_glue('Likhd.*_noApis\\.tif'), 
+                  str_glue('Likhd.*species\\.tif')) 
+rich_tif_fp <- list.files(cultivo_dir, pattern, full.name=T)
+stack_n <- rich_tif_fp %>% str_extract('(?<=_)\\d+(?=species)')
+
+# Plot richness
+pol_rich_stars <- stars::read_stars(rich_tif_fp)
+rich_plot  <- ggplot2::ggplot() +
+  stars::geom_stars(data=pol_rich_stars) +
+  ggplot2::geom_sf(data = mex, 
+                   fill = "transparent", 
+                   size = 0.2, 
+                   color = scales::alpha("lightgray", 0.2)) +
+  colormap::scale_fill_colormap(stringr::str_glue("Richness\n(N = {stack_n})"), 
+                                na.value = "transparent", 
+                                colormap = colormap::colormaps$viridis) +
+  ggthemes::theme_hc() +
+  ggplot2::theme(legend.position=c(.95, 1), 
+                 legend.title.align=0, 
+                 legend.justification = c(1,1)) +
+  ggplot2::labs(x = NULL, y = NULL)
+
+# Load crop polygons
+if(!is.na(temporada) & temporada == 'perenne') {
+  season <- 'peren'
+  fp_out <- file.path(ag_by_crop_dir, str_c(safe_var_name, '_', season, '.gpkg'))
+  crop_polys <- ifelse(file.exists(fp_out), 
+                      st_read(fp_out), 
+                      get_crop_polys(safe_var_name, season, crops_dir, ag_by_crop_dir, est_to_cve))
+} else {
+  
+  # Spring crop
+  season <- 'primperen'
+  fp_out <- file.path(ag_by_crop_dir,
+                      str_c(safe_var_name, '_', season, '.geojson'))
+  polys_prim <- st_read(fp_out)
+  
+  # Fall crop
+  season <- 'otoperen'
+  fp_out <- file.path(ag_by_crop_dir,
+                      str_c(safe_var_name, '_', season, '.geojson'))
+  polys_oto <- st_read(fp_out)
+
+}
+
+
+# Simplify - TESTING
+simp_fp <- file.path(cultivo_dir, str_glue('crop_probabilities_{season}_simplified.gpkg'))
+if(!file.exists(simp_fp)){
+  polys <- crop_polys %>% 
+    mutate(crop_prob = round(crop_prob, 2)) %>% 
+    filter(crop_prob > 0)
+  pols_diss <- polys %>% group_by(crop_prob) %>% summarise() 
+  pols_diss <- pols_diss %>% nngeo::st_remove_holes(.1) 
+  pols_dis2 <- pols_diss %>% st_simplify(preserveTopology = T, dTolerance=.005)
+  pols_buf1 <- pols_dis2 %>% st_buffer(.005) 
+  pols_buf1 <- pols_buf1 %>% group_by(crop_prob) %>% summarise() %>% 
+    st_buffer(-.0049)
+  pols_buf1 <- pols_buf1 %>% nngeo::st_remove_holes(.1) 
+  pols_buf1 %>% st_write(simp_fp, delete_dsn=T)
+} else {
+  pols_buf1 <- st_read(simp_fp)
+}
+
+# Plot crops
+crop_plot  <- ggplot2::ggplot() +
+  ggplot2::geom_sf(data = mex, 
+                   fill = "transparent", 
+                   size = 0.2, 
+                   color = scales::alpha("lightgray", 1)) +
+  ggplot2::geom_sf(pols_buf1, mapping=aes(fill=crop_prob, color=crop_prob)) +
+  ggplot2::scale_fill_viridis_c(name=stringr::str_glue('Proporción del cultivo de {var}'),
+                         limits=c(0, 1),
+                         aesthetics=c('fill', 'color'),
+                         begin=0.35, end=1,
+                         trans='sqrt') +
+  ggthemes::theme_hc() +
+  ggplot2::theme(legend.position=c(.95, 1), 
+                 legend.title.align=0, 
+                 legend.justification = c(1,1)) +
+  ggplot2::labs(x = NULL, y = NULL)
+
+# Combine
+wrap_plots(list(rich_plot, crop_plot ), ncol=2, guides = 'collect') & 
+  theme(legend.position = 'bottom')
+
+```
+
