@@ -544,6 +544,27 @@ get_crop_polys <- function(var, season, crops_dir, ag_by_crop_dir, est_to_cve){
 }
 
 #' @export
+simplify_crop_polys <- function(polys, out_fp=NA, tol1=0.001, tol2=0.0005) {
+  # Simplify polygons for mapping at national scale
+  # Polygons in geographic projection
+  # library(magrittr)
+  
+  pols_diss <- dplyr::summarise(dplyr::group_by(polys, crop_prob)) 
+  pols_dis2 <- nngeo::st_remove_holes(pols_diss, .01) 
+  pols_buf1 <- sf::st_buffer(pols_dis2, tol1) 
+  pols_buf1 <- dplyr::summarise(dplyr::group_by(pols_buf1, crop_prob))
+  pols_buf1 <- sf::st_buffer(pols_buf1, -tol1-0.0001)
+  pols_buf1 <- nngeo::st_remove_holes(pols_buf1, .01) 
+  pols_buf1 <- sf::st_simplify(pols_buf1, preserveTopology = T, dTolerance=tol2)
+  
+  if(!is.na(out_fp)) {
+    sf::st_write(pols_buf1, out_fp, delete_dsn=T)
+  }
+  
+  return(pols_buf1)
+}
+
+#' @export
 model_species_rf <- function(sp_df,
                              pred, 
                              model_fp, 

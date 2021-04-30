@@ -40,7 +40,9 @@ library(tidyverse)
 library(patchwork)
 library(rcompanion)
 options(box.path = getwd())
-box::use(R/functions[get_crop_polys, est_to_cve],
+box::use(R/functions[get_crop_polys, 
+                     est_to_cve, 
+                     simplify_crop_polys],
          select = dplyr[select])
 
 # sessionInfo()
@@ -85,6 +87,66 @@ safe_var_name <- cult_df[[i, 'Nombre_SIAP']]
 temporada <- cult_df[[i, 'temporada']]
 cultivo_dir <- file.path(pol_pt_dir, 'sdms_by_crop', str_replace_all(cult, ' ', '_'))
 
+
+# Load crop polygons
+fps <- list.files(ag_by_crop_dir, safe_var_name, full.names = T)
+
+if(length(fps) == 1) {
+  
+  fp_out <- fps
+  season <- fp_out %>% str_extract('peren|primperen|otoperen|prim|oto')
+  crop_polys <- (if(file.exists(fp_out)) st_read(fp_out) 
+    else get_crop_polys(safe_var_name, season, crops_dir, ag_by_crop_dir, est_to_cve))
+  
+} else if(!is.na(temporada) & temporada == 'perenne') {
+  
+  season <- 'peren'
+  fp_out <- file.path(ag_by_crop_dir, str_c(safe_var_name, '_', season, '.gpkg'))
+  crop_polys <- (if(file.exists(fp_out)) st_read(fp_out) 
+    else get_crop_polys(safe_var_name, season, crops_dir, ag_by_crop_dir, est_to_cve))
+  
+} else {
+  
+  # Spring crop
+  season <- 'primperen'
+  fp_out <- file.path(ag_by_crop_dir,
+                      str_c(safe_var_name, '_', season, '.geojson'))
+  polys_prim <- st_read(fp_out)
+  
+  # Fall crop
+  season <- 'otoperen'
+  fp_out <- file.path(ag_by_crop_dir,
+                      str_c(safe_var_name, '_', season, '.geojson'))
+  polys_oto <- st_read(fp_out)
+
+}
+
+# Simplify - TESTING
+simp_fp <- file.path(cultivo_dir, str_glue('crop_probs_{season}_simplified.gpkg'))
+
+if(!file.exists(simp_fp)){
+
+  polys <- crop_polys %>% 
+    mutate(crop_prob = round(crop_prob, 2)) %>% 
+    filter(crop_prob > 0)
+  polys_simp <- simplify_crop_polys(polys, out_fp=simp_fp, tol1=0.001, tol2=0.005)
+
+  # pols_diss <- polys %>% group_by(crop_prob) %>% summarise() 
+  # pols_diss <- pols_diss %>% nngeo::st_remove_holes(.1) 
+  # pols_dis2 <- pols_diss %>% st_simplify(preserveTopology = T, dTolerance=.005)
+  # pols_buf1 <- pols_dis2 %>% st_buffer(.005) 
+  # pols_buf1 <- pols_buf1 %>% group_by(crop_prob) %>% summarise() %>% 
+  #   st_buffer(-.0049)
+  # pols_buf1 <- pols_buf1 %>% nngeo::st_remove_holes(.1) 
+  # pols_buf1 %>% st_write(simp_fp, delete_dsn=T)
+} else {
+  
+  polys_simp <- st_read(simp_fp)
+  
+}
+
+zoom_box <- st_bbox(c(xmin = -105.5, xmax = -104, ymin = 23.9, ymax = 25), crs=4326)
+
 # Filename for richness tif
 pattern <- ifelse(params$exclude_apis, 
                   str_glue('Likhd.*_noApis\\.tif'), 
@@ -109,56 +171,17 @@ rich_plot  <- ggplot2::ggplot() +
                  legend.justification = c(1,1)) +
   ggplot2::labs(x = NULL, y = NULL)
 
-# Load crop polygons
-if(!is.na(temporada) & temporada == 'perenne') {
-  season <- 'peren'
-  fp_out <- file.path(ag_by_crop_dir, str_c(safe_var_name, '_', season, '.gpkg'))
-  crop_polys <- ifelse(file.exists(fp_out), 
-                      st_read(fp_out), 
-                      get_crop_polys(safe_var_name, season, crops_dir, ag_by_crop_dir, est_to_cve))
-} else {
-  
-  # Spring crop
-  season <- 'primperen'
-  fp_out <- file.path(ag_by_crop_dir,
-                      str_c(safe_var_name, '_', season, '.geojson'))
-  polys_prim <- st_read(fp_out)
-  
-  # Fall crop
-  season <- 'otoperen'
-  fp_out <- file.path(ag_by_crop_dir,
-                      str_c(safe_var_name, '_', season, '.geojson'))
-  polys_oto <- st_read(fp_out)
-
-}
-
-
-# Simplify - TESTING
-simp_fp <- file.path(cultivo_dir, str_glue('crop_probabilities_{season}_simplified.gpkg'))
-if(!file.exists(simp_fp)){
-  polys <- crop_polys %>% 
-    mutate(crop_prob = round(crop_prob, 2)) %>% 
-    filter(crop_prob > 0)
-  pols_diss <- polys %>% group_by(crop_prob) %>% summarise() 
-  pols_diss <- pols_diss %>% nngeo::st_remove_holes(.1) 
-  pols_dis2 <- pols_diss %>% st_simplify(preserveTopology = T, dTolerance=.005)
-  pols_buf1 <- pols_dis2 %>% st_buffer(.005) 
-  pols_buf1 <- pols_buf1 %>% group_by(crop_prob) %>% summarise() %>% 
-    st_buffer(-.0049)
-  pols_buf1 <- pols_buf1 %>% nngeo::st_remove_holes(.1) 
-  pols_buf1 %>% st_write(simp_fp, delete_dsn=T)
-} else {
-  pols_buf1 <- st_read(simp_fp)
-}
+crop_lyr_name <- stringr::str_glue('Proporción del\ncultivo de {var}')
 
 # Plot crops
 crop_plot  <- ggplot2::ggplot() +
   ggplot2::geom_sf(data = mex, 
-                   fill = "transparent", 
+                   # fill = "transparent", 
+                   fill = "lightgray", 
                    size = 0.2, 
                    color = scales::alpha("lightgray", 1)) +
-  ggplot2::geom_sf(pols_buf1, mapping=aes(fill=crop_prob, color=crop_prob)) +
-  ggplot2::scale_fill_viridis_c(name=stringr::str_glue('Proporción del cultivo de {var}'),
+  ggplot2::geom_sf(polys_simp, mapping=aes(fill=crop_prob, color=crop_prob)) +
+  ggplot2::scale_fill_viridis_c(name = crop_lyr_name,
                          limits=c(0, 1),
                          aesthetics=c('fill', 'color'),
                          begin=0.35, end=1,
@@ -167,11 +190,47 @@ crop_plot  <- ggplot2::ggplot() +
   ggplot2::theme(legend.position=c(.95, 1), 
                  legend.title.align=0, 
                  legend.justification = c(1,1)) +
-  ggplot2::labs(x = NULL, y = NULL)
+  ggplot2::labs(x = NULL, y = NULL) +
+  ggplot2::geom_sf(data = st_as_sfc(zoom_box, crs=4326),
+                   fill = "transparent",
+                   size = 0.4, 
+                   color = scales::alpha("black", 1))
+
+# Zoom to region of interest
+# Plot crops
+overlay_plot <- ggplot2::ggplot() +
+  # Richness surface
+  stars::geom_stars(data=pol_rich_stars) +
+  ggplot2::geom_sf(data = mex, 
+                   fill = "transparent", 
+                   size = 0.2, 
+                   color = scales::alpha("lightgray", 0.2)) +
+  colormap::scale_fill_colormap(stringr::str_glue("Richness\n(N = {stack_n})"), 
+                                na.value = "transparent", 
+                                colormap = colormap::colormaps$viridis) +
+  
+  ggnewscale::new_scale_fill() +
+
+  # Crop polygons
+  ggplot2::geom_sf(polys_simp, mapping=aes(fill=crop_prob, color=crop_prob)) +
+  ggplot2::scale_fill_viridis_c(name = crop_lyr_name,
+                         limits=c(0, 1),
+                         aesthetics=c('fill', 'color'),
+                         begin=0.35, end=1,
+                         trans='sqrt') +
+  
+  # Design
+  ggthemes::theme_hc() +
+  ggplot2::theme(legend.position= 'right', 
+                 legend.title.align=0, 
+                 legend.justification = c(1,1)) +
+  ggplot2::labs(x = NULL, y = NULL) + 
+  
+  ggplot2::coord_sf(xlim = c(zoom_box$xmin, zoom_box$xmax), 
+                    ylim = c(zoom_box$ymin, zoom_box$ymax))
 
 # Combine
-wrap_plots(list(rich_plot, crop_plot ), ncol=2, guides = 'collect') & 
+wrap_plots(list(rich_plot, crop_plot, overlay_plot), ncol=3, guides = 'collect') & 
   theme(legend.position = 'bottom')
-
 ```
 

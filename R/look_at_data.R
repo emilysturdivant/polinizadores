@@ -57,6 +57,7 @@ hill_df %>%
 # Pollinators
 name <- 'Murcielagos'
 fp_out <- file.path('data/data_out/pollinator_points', str_c(name, '.geojson'))
+fp_out <- file.path('data/data_out/pollinator_points/no_duplicates', str_c(name, '.gpkg'))
 df <- st_read(fp_out)
 
 # Gi* statistics, ggplot for mapping --------
@@ -257,7 +258,7 @@ hex_polys <- mex %>% as_Spatial %>%
   st_as_sf(crs = st_crs(mex)) %>%
   st_intersection(., mex)                  # clip to the Mexico boundary
 
- # Filter points ----
+# Filter points ----
 df <- df %>% 
   filter(eventDate > 2009)
 

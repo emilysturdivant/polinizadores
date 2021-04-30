@@ -4,7 +4,8 @@
 # Load libraries ----
 box::use(R/functions[get_area_planted, 
                      load_and_preprocess_fmg, 
-                     est_to_cve])
+                     est_to_cve, 
+                     simplify_crop_polys])
 
 # library(sf)
 # library(tidyverse)
@@ -154,28 +155,6 @@ fp_fmg <- file.path(fmg_dir, str_c('fmg_siap15_', estado, '.geojson'))
 st_write(sup_fmg, fp_fmg, delete_dsn=T)
 
 # Merge frijol polygons ----
-simplify_crop_polys <- function(polys, out_fp=NA, tolerance=0.001) {
-  # Simplify polygons for mapping at national scale
-  # Polygons in geographic projection
-  
-  pols_diss <- polys %>%
-    group_by(crop_prob) %>% summarise() 
-  pols_dis2 <- pols_diss %>% nngeo::st_remove_holes(.1) 
-  # pols_dis2 <- pols_dis2 %>% st_simplify(preserveTopology = T, dTolerance=0.0005)
-  pols_buf1 <- pols_dis2 %>% st_buffer(tolerance) 
-  pols_buf1 <- pols_buf1 %>% 
-    group_by(crop_prob) %>% summarise() %>% 
-    st_buffer(-tolerance-0.0001)
-  pols_buf1 <- pols_buf1 %>% nngeo::st_remove_holes(.1) 
-  pols_buf1 <- pols_buf1 %>% st_simplify(preserveTopology = T, dTolerance=0.0005)
-  
-  if(!is.na(out_fp)) {
-    pols_buf1 %>% st_write(out_fp, delete_dsn=T)
-  }
-  
-  return(pols_buf1)
-}
-
 load_and_simplify <- function(fp){
   
   # Function to rename sf geometry column
@@ -212,15 +191,18 @@ load_and_simplify <- function(fp){
 
 fps <- list.files(fmg_dir, full.names=T)
 polys_out <- map_dfr(fps, load_and_simplify)
-polys_out %>% st_write('data/data_out/polys_ag_INEGI_wFMG_pcts/specific_crops/Frijol.gpkg', 
+polys_out %>% st_write('data/data_out/polys_ag_INEGI_wFMG_pcts/specific_crops/Frijol_prim.gpkg', 
                        delete_dsn=T)
+polys_out <- st_read('data/data_out/polys_ag_INEGI_wFMG_pcts/specific_crops/Frijol_prim.gpkg')
 
-fp <- fps[[28]]
-frij_zac <- load_and_simplify(fps[[28]])
+# Rerun for certain states
+fp <- fps[[26]]
+frij_est <- load_and_simplify(fp)
+polys_out <- bind_rows(polys_out, frij_est)
 tm_shape(polys_out) + tm_polygons()
-polys_out <- st_read('data/data_out/polys_ag_INEGI_wFMG_pcts/specific_crops/Frijol.gpkg')
 
-polys_out <- bind_rows(polys_out, frij_zac)
+polys_out %>% st_write('data/data_out/polys_ag_INEGI_wFMG_pcts/specific_crops/Frijol_prim.gpkg', 
+                       delete_dsn=T)
 
 # Extract FMG from general agriculture -----------------------------------------
 for(estado in est_codes){
