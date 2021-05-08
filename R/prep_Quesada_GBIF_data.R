@@ -20,7 +20,7 @@ name <- 'Abejas'
 # Pollinator database ----
 data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/Completos'
 fps <- list.files(data_dir, full.names = T)
-fp <- fps[[5]]
+fp <- fps[[4]]
 
 (name <- fp %>% 
     basename %>% file_path_sans_ext %>% 
@@ -32,14 +32,28 @@ if(!file.exists(temp_fp)){
   
   dat <- read_csv(fp)
   
-  # Use taxize to get superfamily (because not included in )
-  fam_list <- dat %>% 
-    dplyr::select(family) %>% 
+  # List unique genuses
+  gen_list <- dat %>% 
+    dplyr::select(genus) %>% 
     distinct %>% 
-    mutate(superfamily = taxize::tax_name(family, get='superfamily', db='ncbi')[[3]])
+    filter(!is.na(genus))
   
+  # Use taxize to get tribe and superfamily
+  new_taxons <- gen_list %>% 
+    purrr::map_dfr(taxize::tax_name, get=c('tribe', 'superfamily'), db='both')
+  
+  # Tidy results
+  new_taxons <- new_taxons %>% 
+    group_by(query) %>% 
+    fill(tribe, superfamily, .direction = 'down') %>% 
+    fill(tribe, superfamily, .direction = 'up') %>% 
+    slice(1) %>% 
+    ungroup %>% 
+    dplyr::select(genus = query, tribe, superfamily)
+  
+  # Join to df
   dat <- dat %>% 
-    left_join(fam_list) 
+    left_join(new_taxons) 
   
   if(name == 'Mariposas'){
     dat <- dat %>% 
@@ -49,6 +63,7 @@ if(!file.exists(temp_fp)){
       ))
   }
   
+  # Save
   dat %>% write_csv(temp_fp)
   
 } else {
@@ -58,7 +73,7 @@ if(!file.exists(temp_fp)){
 }
 
 # Data tidying steps: drop coords with NAs, drop duplicates, flag/drop imprecise
-vars <- c('species', 'genus', 'family', 'superfamily', 'order', 'class', 'nocturna', 
+vars <- c('species', 'genus', 'tribe', 'family', 'superfamily', 'order', 'class', 'nocturna', 
           'decimalLongitude', 'decimalLatitude', 
           'eventDate', 'coordinateUncertaintyInMeters', 'habitat', 
           'basisOfRecord', 'country', 'stateProvince', 'institutionCode')
@@ -80,7 +95,7 @@ sf_df <- df %>%
 # Save
 fp_out <- file.path('data/data_out/pollinator_points/with_duplicates', 
                     str_c(name, '.gpkg'))
-sf_df %>% st_write(fp_out, delete_dsn=T)
+sf_df %>% st_write(fp_out, append = FALSE)
 
 # drop duplicates ----
 sf_df2 <- df %>% 
@@ -92,7 +107,7 @@ sf_df2 <- df %>%
 # Save
 fp_out <- file.path('data/data_out/pollinator_points/no_duplicates',
                     str_c(name, '.gpkg'))
-sf_df2 %>% st_write(fp_out, delete_dsn=T)
+sf_df2 %>% st_write(fp_out, append = FALSE)
 
 # Get list of unique species and join to species in Informacion_general ----
 pol_group <- 'Abejas'

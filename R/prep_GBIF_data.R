@@ -106,7 +106,7 @@ dat %>%
 # Load previously downloaded data ----
 dat <- readRDS(str_c('data/data_out/r_data/gbif_polinizadores.RData'))
 
-# Looking around... ----
+# Looking around... 
 dat %>% colnames
 dat %>% select(contains('issues'), contains('status')) %>% distinct
 dat %>% select(contains('date')) %>% colnames
@@ -206,3 +206,4 @@ df_anp %>% st_set_geometry(NULL) %>% select(NOMBRE) %>% distinct %>% deframe
 # (they don't exactly match the "ANPs and Polinizadores de Mexico" table from Mauricio)
 df_anp %>% filter(NOMBRE == "La Primavera")
 
+# Get GBIF data based on orders/classes in Cultivo-Polinizadores table ----
