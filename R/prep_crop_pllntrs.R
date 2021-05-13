@@ -84,9 +84,11 @@ standardize_crop_species <- function(x) {
 
 # Filepaths ----
 ap1_xls_fp <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/Apendice1.xlsx'
-crp_pllntrs_fp <- 'data/tidy/Quesada/crop_pllntrs_from_ap2_updated.csv'
+# crp_pllntrs_fp <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/appendices/Apendice2.csv'
+crp_pllntrs_fp <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/crop_pllntrs_from_ap2_updated.csv'
 
-# Apendice1, crop production values and importance of pollination ----
+# List crops with highest pollinator value ----
+# Apendice1, crop production values and importance of pollination
 # DD = uso directo y dependiente de polinizador
 ap1_sheets <- list(
   readxl::read_excel(ap1_xls_fp, na = c('- -', '.'), .name_repair = 'universal'),
@@ -94,9 +96,9 @@ ap1_sheets <- list(
   readxl::read_excel(ap1_xls_fp, 3, na = c('- -', '.'), .name_repair = 'universal'),
   readxl::read_excel(ap1_xls_fp, 4, na = c('- -', '.'), .name_repair = 'universal'))
 
+# Convert to single DF
 ap1_df <- plyr::join_all(ap1_sheets, by = 'Especie', type = 'full')
 ap1_df <- ap1_df %>% mutate(Cultivo = standardize_crop_species(Especie))
-crops_ap1 <- ap1_df %>% select(Cultivo)
 
 # Get crops with highest pollinator value (Valor del polinizador) 
 top10_ap1 <- ap1_df %>% 
@@ -104,13 +106,16 @@ top10_ap1 <- ap1_df %>%
   arrange(desc(Valor.del.polinizador.en.2010..MEX..)) %>% 
   head(10) 
 
-# Apendice2, crop to pollinator table ----
+top10_ap1 %>% distinct(Cultivo)
+
+# Get pollinator species for top crops ----
+
+# Apendice2, crop to pollinator table
 ap2_df <- tidy_croppllntrs_tbl(crp_pllntrs_fp) %>% 
   mutate(Cultivo = standardize_crop_species(Cultivo))
 
 # Extract species of top crops from ap2
 top10_pols <- semi_join(ap2_df, top10_ap1, by = "Cultivo")
-top10_pols %>% distinct(Cultivo)
 
 # Look at genera listed for each crop
 crop_list <- top10_pols %>% 
