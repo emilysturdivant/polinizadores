@@ -256,7 +256,7 @@ unq_code <- ifelse(unq_cells, 'unq_cells', 'unq_pts')
 unq_code <- ifelse(mutually_exclusive_pa, 'unq_cells_exclusive', unq_code)
 dfilt_code <- ifelse(filt_dates, '2000to2020', 'alldates')
 
-fp_tail <- file.path('sdm', str_c(unq_code, '_', dfilt_code), 'rf1', pol_group)
+fp_tail <- file.path('sdm', 'rf1', str_c(unq_code, '_', dfilt_code), pol_group)
 pred_dir <- file.path('data', 'data_out', fp_tail)
 rf_fig_dir <- file.path('figures', fp_tail)
 dir.create(pred_dir, recursive=T, showWarnings = F)

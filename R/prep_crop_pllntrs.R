@@ -121,3 +121,5 @@ top10_pols <- semi_join(ap2_df, top10_ap1, by = "Cultivo")
 crop_list <- top10_pols %>% 
   group_by(Cultivo) %>% 
   distinct(genus)
+
+# ~ GBIF download ----

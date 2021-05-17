@@ -36,62 +36,62 @@ keys_df <- upp_ranks %>%
   pmap_dfr(~ name_suggest(.x, rank = .y)$data )
 
 # ~ Single download (prior method) ----
-keys <- keys_df %>% dplyr::select(key) %>% deframe
-
-# Cue download and perform - only need to run once 
-res <- occ_download(pred_in('taxonKey', keys), 
-                    pred('country', 'MX'),
-                    pred_notnull('decimalLongitude'),
-                    pred_notnull('decimalLatitude'),
-                    pred_not(pred('decimalLongitude', 0)),
-                    pred_not(pred('decimalLatitude', 0)))
-
-# Wait for download to be ready
-occ_download_meta(res)
-
-# Perform download
-download_out <- occ_download_get(res[[1]], overwrite=T) 
-dat <- download_out %>% occ_download_import()
-datA <- dat %>%
-  filter(!str_detect(issue, 'COUNTRY_COORDINATE_MISMATCH')) 
-
-# Save raw
-dat %>% saveRDS(raw_fp)
-
-# Load raw ----
-dat <- readRDS(raw_fp)
-
-# select only necessary columns
-vars <- c('gbifID',
-          # taxonomic
-          'species', 'genus', 'family', 'order', 'class',
-          # location
-          'decimalLongitude', 'decimalLatitude', 'coordinateUncertaintyInMeters', 
-          'georeferenceRemarks', 'issue',
-          # place
-          'country', 'countryCode', 'stateProvince', 'county', 
-          'municipality', 'locality', 'verbatimLocality',
-          # time
-          'eventDate',
-          # collection
-          'basisOfRecord', 'country', 'institutionCode',
-          'institutionID', 'ownerInstitutionCode', 'recordedBy',
-          'datasetName',
-          # elevation
-          'verbatimElevation', 'elevation', 'elevationAccuracy',
-          # misc
-          'occurrenceStatus', 'establishmentMeans'
-)
-dat1 <- dat %>% dplyr::select(matches(vars))
-
-# Save
-dat1 %>% saveRDS(gbif_slim_fp)
-
-dat1 <- readRDS(gbif_slim_fp)
-
-
-t1 <- dat1 %>% count(datasetName)
-t1 <- dat1 %>% count(establishmentMeans)
+# keys <- keys_df %>% dplyr::select(key) %>% deframe
+# 
+# # Cue download and perform - only need to run once 
+# res <- occ_download(pred_in('taxonKey', keys), 
+#                     pred('country', 'MX'),
+#                     pred_notnull('decimalLongitude'),
+#                     pred_notnull('decimalLatitude'),
+#                     pred_not(pred('decimalLongitude', 0)),
+#                     pred_not(pred('decimalLatitude', 0)))
+# 
+# # Wait for download to be ready
+# occ_download_meta(res)
+# 
+# # Perform download
+# download_out <- occ_download_get(res[[1]], overwrite=T) 
+# dat <- download_out %>% occ_download_import()
+# datA <- dat %>%
+#   filter(!str_detect(issue, 'COUNTRY_COORDINATE_MISMATCH')) 
+# 
+# # Save raw
+# dat %>% saveRDS(raw_fp)
+# 
+# # Load raw ----
+# dat <- readRDS(raw_fp)
+# 
+# # select only necessary columns
+# vars <- c('gbifID',
+#           # taxonomic
+#           'species', 'genus', 'family', 'order', 'class',
+#           # location
+#           'decimalLongitude', 'decimalLatitude', 'coordinateUncertaintyInMeters', 
+#           'georeferenceRemarks', 'issue',
+#           # place
+#           'country', 'countryCode', 'stateProvince', 'county', 
+#           'municipality', 'locality', 'verbatimLocality',
+#           # time
+#           'eventDate',
+#           # collection
+#           'basisOfRecord', 'country', 'institutionCode',
+#           'institutionID', 'ownerInstitutionCode', 'recordedBy',
+#           'datasetName',
+#           # elevation
+#           'verbatimElevation', 'elevation', 'elevationAccuracy',
+#           # misc
+#           'occurrenceStatus', 'establishmentMeans'
+# )
+# dat1 <- dat %>% dplyr::select(matches(vars))
+# 
+# # Save
+# dat1 %>% saveRDS(gbif_slim_fp)
+# 
+# dat1 <- readRDS(gbif_slim_fp)
+# 
+# 
+# t1 <- dat1 %>% count(datasetName)
+# t1 <- dat1 %>% count(establishmentMeans)
 
 # ~ Iteratively cue GBIF download and perform ----
 # Functions to improve iteration
@@ -318,7 +318,7 @@ bat_genera_keys <- bat_genera %>%
 # Single download (prior method) 
 keys <- bat_genera_keys %>% dplyr::select(key) %>% deframe
 
-# Cue download - only need to run once 
+# Cue download
 res <- occ_download(pred_in('taxonKey', keys), 
                     pred('country', 'MX'),
                     pred_notnull('decimalLongitude'),
