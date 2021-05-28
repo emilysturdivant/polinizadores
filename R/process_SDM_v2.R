@@ -1,20 +1,22 @@
 # v2: using GBIF points that I downloaded
+# Input: points downloaded from GBIF in folder input_data/GBIF/family_order_query
+# Output: files in folder for current iteration of RF: data_out/sdm/rfX_params/query_term
 
 # Load libraries ----
-library('sf')
 # library(tools)
 # library(maptools)
 # library(mapview)
 # library(units)
 # library(rgbif)
 # library(scrubr)
-library('dismo')
-library('raster') # use raster for compatibility with dismo
 # library('terra')
-library('stars')
-library('tidyverse')
 # library(tmap)
 # tmap::tmap_mode('view')
+library('dismo')
+library('raster') # use raster for compatibility with dismo
+library('stars')
+library('sf')
+library('tidyverse')
 
 # Initialize -----
 # Mexico
@@ -264,16 +266,21 @@ unq_cells = TRUE
 mutually_exclusive_pa = TRUE
 filt_dates = FALSE
 # pol_group <- 'Abejas'
-nspecies <- 15
+nspecies <- 45
 rf_vers <- 2
-name <- order <- 'Hymenoptera'
+name <- order <- 'Diptera'
+contin_vars_only <- FALSE
 
 # directory paths
 unq_code <- ifelse(unq_cells, 'unq_cells', 'unq_pts')
 unq_code <- ifelse(mutually_exclusive_pa, 'exclusive', unq_code)
 dfilt_code <- ifelse(filt_dates, '2000to2020', 'alldates')
+cont_var_code <- ifelse(contin_vars_only, '_continuouspredictors', '')
 
-fp_tail <- file.path('sdm', str_c('rf', rf_vers, '_', unq_code, '_', dfilt_code), name)
+fp_tail <- file.path('sdm', 
+                     str_c('rf', 
+                           str_c(rf_vers, unq_code, dfilt_code, sep='_'), cont_var_code), 
+                     name)
 pred_dir <- file.path('data', 'data_out', fp_tail)
 rf_fig_dir <- file.path('figures', fp_tail)
 dir.create(pred_dir, recursive=T, showWarnings = F)
@@ -288,7 +295,6 @@ pol_fp_out <- file.path(pred_dir, str_c('filtered_pts_', name, '.gpkg'))
 
 filt_pts_rds <- file.path(pred_dir, str_c('filtered_pts_', name, '.rds'))
 
-# TESTING ----
 # Load and tidy GBIF points ----
 dat <- readRDS(pts_fp)
 
@@ -425,7 +431,7 @@ for(rf_fp in sp_fps){
   
 }
 
-# Likelihood maps ----
+# Create PNGs of likelihood maps ----
 fps <- list.files(file.path(pred_dir, 'likelihood'), '*.tif', full.names=T)
 
 for (fp in fps) {
@@ -453,7 +459,7 @@ for (fp in fps) {
   
 }
 
-# Presence maps ----
+# Create PNGs of presence maps ----
 fps <- list.files(file.path(pred_dir, 'binned_spec_sens'), '*.tif', full.names=T)
 for (fp in fps) {
   

@@ -2,6 +2,7 @@
 # Input: Diversity data frame (normalized richness variable for unique combinations of the 4 variables)
 
 # After looking at multivariate regression, try random forest.
+# last updated 3/22/2021
 
 # Load libraries ----
 library(tidyverse)

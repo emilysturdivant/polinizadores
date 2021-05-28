@@ -1,4 +1,5 @@
-
+# Make heatmaps (Gi*) of pollinator points by species. 
+# At the end I started to compare SIAP to QRO data
 
 # Load libraries ---------------------------------------------------------------
 library(sf)
@@ -392,35 +393,20 @@ ggsave(fp_out, width = 11, height=8)
 
 
 
-
-
-
-# ----
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Load libraries ----
+# ~ MISCELLANEOUS ----
+# Load libraries 
 library(rvest)
 library(tools)
 library(units)
-# Load data ----
+
+# Load data
 # Initial variables/helpers: ag_dir, regions, fmg_dir, est_codes, states_by_region
 load('data/helpers/initial_vars.RData') 
 # Crop statistics: area_cult_peren, area_cult_prim, area_cult_otono, cultivos
 load("data/data_out/r_data/area_sembrada_by_season_2019.RData") 
 lookup <- readRDS('data/helpers/lookup_municipio_codes.rds')
 
-# Cultivos: compare SIAP data to QRO SEDEA for QRO ----
+# Compare SIAP to QRO SEDEA data ----
 # List columns
 area_cult_prim %>% colnames
 vars <- area_cult_prim %>% 

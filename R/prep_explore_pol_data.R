@@ -37,6 +37,7 @@ mex <- raster::getData('GADM', country='MEX', level=0,
 
 
 # Combine all zones into one SFC ----
+# This process is also in prep_create_ANP_zones_and_plot_v1.R
 bind_fp <- str_c('data/data_out/ANPs/ANPs_allzones_biomes_buffer_', 
                  buffer_distance,'km.geojson')
 
