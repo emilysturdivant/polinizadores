@@ -1,17 +1,13 @@
 # Create database to comply with first WWF deliverable
 # Follows processing in prep_Quesada_GBIF_data.R
 
-# Load libraries ----
 library("sf")
 library("tidyverse")
 
-# Initialize ----
-df1_fp <- 'data/data_out/for_wwf/polinizadores_v2.csv'
-df2_fp <- 'data/data_out/for_wwf/polinizadores_subgroups_v2.csv'
-crp_pllntrs_fp <- 'data/tidy/Quesada/crop_pllntrs_from_ap2_updated_tidied.csv'
-crp_pllntrs_fp <- 'data/tidy/Quesada/crop_pllntrs_updated_top10.csv'
+df1_fp <- 'data/data_out/for_wwf/polinizadores_v1.csv'
+df2_fp <- 'data/data_out/for_wwf/polinizadores_subgroups.csv'
+crp_pllntrs_fp <- 'data/tidy/Quesada/crop_pllntrs_from_appendix2.csv'
 gbif_df_fp <- 'data/input_data/GBIF/gbif_crop_pllntrs_slim.rds'
-gbif_df_fp <- 'data/input_data/GBIF/gbif_top10crops_generards'
 
 # Make base de datos de polinizadores de México ----
 # List pre-processed pollinator point files

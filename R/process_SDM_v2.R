@@ -19,29 +19,20 @@ library('sf')
 library('tidyverse')
 
 # Initialize -----
-# Mexico
-mex <- raster::getData('GADM', country='MEX', level=1, 
-                       path='data/input_data/context_Mexico') %>% 
-  st_as_sf()
+unq_cells = TRUE
+mutually_exclusive_pa = TRUE
+filt_dates = FALSE
+# pol_group <- 'Abejas'
+nspecies <- 15
+rf_vers <- 2
+name <- order <- 'Hymenoptera'
+contin_vars_only <- TRUE
 
 # Date range
 date_range <- c(2000, 2020)
 # pol_groups <- c('Abejas', 'Avispas', 'Colibries', 'Mariposas', 'Moscas', 'Murcielagos')
 
-# Load environment variables ----
-crop_dir <- file.path('data', 'input_data', 'environment_variables', 'cropped')
-predictors <- raster::stack(list.files(crop_dir, 'tif$', full.names=T))
-# predictors <- terra::rast(list.files(crop_dir, 'tif$', full.names=T))
-
-# Remove layers from predictors
-drop_lst <- c('biomes_CVEECON2', 'biomes_CVEECON1', 'biomes_CVEECON4',
-              'ESACCI.LC.L4.LC10.Map.10m.MEX_2016_2018', 
-              'usv250s6gw_USV_SVI')
-pred <- predictors[[- which(names(predictors) %in% drop_lst) ]]
-
-# Set extent for testing
-ext <- raster::extent(mex)
-
+# Functions ----
 #' @export
 model_species_rf <- function(sp_df,
                              pred, 
@@ -261,15 +252,32 @@ stack_sdms <- function(sp_fps, rich_tif_fp, rich_plot_fp, mex){
   
 }
 
+# Mexico
+mex <- raster::getData('GADM', country='MEX', level=1, 
+                       path='data/input_data/context_Mexico') %>% 
+  st_as_sf()
+
+# Load environment variables ----
+crop_dir <- file.path('data', 'input_data', 'environment_variables', 'cropped')
+predictors <- raster::stack(list.files(crop_dir, 'tif$', full.names=T))
+# predictors <- terra::rast(list.files(crop_dir, 'tif$', full.names=T))
+
+# Remove layers from predictors
+drop_lst <- c('biomes_CVEECON2', 'biomes_CVEECON1', 'biomes_CVEECON4',
+              'ESACCI.LC.L4.LC10.Map.10m.MEX_2016_2018', 
+              'usv250s6gw_USV_SVI')
+
+if(contin_vars_only) {
+  drop_lst <- c(drop_lst, 
+                'biomes_CVEECON3', 'ESACCI.LC.L4.LCCS.Map.300m.P1Y.2015.v2.0.7cds')
+}
+
+pred <- predictors[[- which(names(predictors) %in% drop_lst) ]]
+
+# Set extent for testing
+ext <- raster::extent(mex)
+
 # ~ Standard random forest (from R-Spatial https://rspatial.org/raster/sdm) ----
-unq_cells = TRUE
-mutually_exclusive_pa = TRUE
-filt_dates = FALSE
-# pol_group <- 'Abejas'
-nspecies <- 45
-rf_vers <- 2
-name <- order <- 'Diptera'
-contin_vars_only <- FALSE
 
 # directory paths
 unq_code <- ifelse(unq_cells, 'unq_cells', 'unq_pts')
@@ -283,6 +291,7 @@ fp_tail <- file.path('sdm',
                      name)
 pred_dir <- file.path('data', 'data_out', fp_tail)
 rf_fig_dir <- file.path('figures', fp_tail)
+rf_fig_dir <- pred_dir
 dir.create(pred_dir, recursive=T, showWarnings = F)
 dir.create(rf_fig_dir, recursive=T, showWarnings = F)
 
@@ -510,7 +519,7 @@ sp_fps <- sp_nospc_list %>%
 
 if(length(sp_fps) > 0) {
   
-  rich_fn <- str_glue('Likhd_rich_{pol_group}_{dfilt_code}_{length(sp_fps)}species')
+  rich_fn <- str_glue('Likhd_rich_{name}_{dfilt_code}_{length(sp_fps)}species')
   rich_plot_fp <- file.path(rf_fig_dir, str_glue('{rich_fn}.png'))
   rich_tif_fp <- file.path(pred_dir, str_glue('{rich_fn}.tif'))
   

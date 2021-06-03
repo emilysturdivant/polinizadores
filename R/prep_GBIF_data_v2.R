@@ -1,18 +1,59 @@
 # Get GBIF data based on orders/classes in Cultivo-Polinizadores table 
 
-# Load libraries
+# Load libraries ---------------------------------------------------------------
 library('rgbif')
 library('tidyverse')
 
-# Filepaths
-crp_pllntrs_fp <- 'data/tidy/Quesada/crop_pllntrs_from_appendix2.csv'
-raw_fp <- 'data/input_data/GBIF/gbif_crop_pllntrs.rds'
-gbif_slim_fp <- 'data/input_data/GBIF/gbif_crop_pllntrs_slim.rds'
+# Filepaths --------------------------------------------------------------------
+crp_pllntrs_fp <- 'data/tidy/Quesada/crop_pllntrs_from_ap2_updated_tidied.csv'
+# raw_fp <- 'data/input_data/GBIF/gbif_crop_pllntrs.rds'
+# gbif_slim_fp <- 'data/input_data/GBIF/gbif_crop_pllntrs_slim.rds'
 
-# Load data
+# Functions to improve iteration -----------------------------------------------
+create_gbif_download <- function(taxonKey, filter_uncertainty = TRUE){
+  if(filter_uncertainty) {
+    occ_download(pred_in('taxonKey', taxonKey), 
+                 pred('country', 'MX'),
+                 pred_notnull('decimalLongitude'),
+                 pred_notnull('decimalLatitude'),
+                 pred_not(pred('decimalLongitude', 0)),
+                 pred_not(pred('decimalLatitude', 0)),
+                 pred_not(pred_gte('coordinateUncertaintyInMeters', 1000))
+    )
+  } else {
+    occ_download(pred_in('taxonKey', taxonKey), 
+                 pred('country', 'MX'),
+                 pred_notnull('decimalLongitude'),
+                 pred_notnull('decimalLatitude'),
+                 pred_not(pred('decimalLongitude', 0)),
+                 pred_not(pred('decimalLatitude', 0))
+    )
+  }
+  
+}
+
+download_and_save <- function(dl_res, raw_fp){
+  
+  # Perform download 
+  download_out <- occ_download_get(dl_res[[1]], overwrite = TRUE)
+  # If the above throws an error, a possible workaround is to run in debug mode 
+  # and skip the line causing the error."
+
+  dat <- download_out %>% occ_download_import()
+  datA <- dat %>%
+    filter(!str_detect(issue, 'COUNTRY_COORDINATE_MISMATCH')) 
+  
+  # Save raw
+  datA %>% saveRDS(raw_fp)
+  
+  return(datA)
+}
+
+# Load data --------------------------------------------------------------------
 ap2_df <- read_csv(crp_pllntrs_fp)
 
-# List pollinator orders and families in crop table
+# Get order or family for pollinators in crop table ----
+# List pollinator orders and families in crop table 
 upper_ranks <- ap2_df %>% 
   distinct(family, order) %>% 
   filter(!(is.na(family) & is.na(order)))
@@ -35,102 +76,7 @@ upp_ranks <- bind_rows(orders, families)
 keys_df <- upp_ranks %>% 
   pmap_dfr(~ name_suggest(.x, rank = .y)$data )
 
-# ~ Single download (prior method) ----
-# keys <- keys_df %>% dplyr::select(key) %>% deframe
-# 
-# # Cue download and perform - only need to run once 
-# res <- occ_download(pred_in('taxonKey', keys), 
-#                     pred('country', 'MX'),
-#                     pred_notnull('decimalLongitude'),
-#                     pred_notnull('decimalLatitude'),
-#                     pred_not(pred('decimalLongitude', 0)),
-#                     pred_not(pred('decimalLatitude', 0)))
-# 
-# # Wait for download to be ready
-# occ_download_meta(res)
-# 
-# # Perform download
-# download_out <- occ_download_get(res[[1]], overwrite=T) 
-# dat <- download_out %>% occ_download_import()
-# datA <- dat %>%
-#   filter(!str_detect(issue, 'COUNTRY_COORDINATE_MISMATCH')) 
-# 
-# # Save raw
-# dat %>% saveRDS(raw_fp)
-# 
-# # Load raw ----
-# dat <- readRDS(raw_fp)
-# 
-# # select only necessary columns
-# vars <- c('gbifID',
-#           # taxonomic
-#           'species', 'genus', 'family', 'order', 'class',
-#           # location
-#           'decimalLongitude', 'decimalLatitude', 'coordinateUncertaintyInMeters', 
-#           'georeferenceRemarks', 'issue',
-#           # place
-#           'country', 'countryCode', 'stateProvince', 'county', 
-#           'municipality', 'locality', 'verbatimLocality',
-#           # time
-#           'eventDate',
-#           # collection
-#           'basisOfRecord', 'country', 'institutionCode',
-#           'institutionID', 'ownerInstitutionCode', 'recordedBy',
-#           'datasetName',
-#           # elevation
-#           'verbatimElevation', 'elevation', 'elevationAccuracy',
-#           # misc
-#           'occurrenceStatus', 'establishmentMeans'
-# )
-# dat1 <- dat %>% dplyr::select(matches(vars))
-# 
-# # Save
-# dat1 %>% saveRDS(gbif_slim_fp)
-# 
-# dat1 <- readRDS(gbif_slim_fp)
-# 
-# 
-# t1 <- dat1 %>% count(datasetName)
-# t1 <- dat1 %>% count(establishmentMeans)
-
-# ~ Iteratively cue GBIF download and perform ----
-# Functions to improve iteration
-create_gbif_download <- function(taxonKey, filter_uncertainty = TRUE){
-  if(filter_uncertainty) {
-    occ_download(pred_in('taxonKey', taxonKey), 
-                 pred('country', 'MX'),
-                 pred_notnull('decimalLongitude'),
-                 pred_notnull('decimalLatitude'),
-                 pred_not(pred('decimalLongitude', 0)),
-                 pred_not(pred('decimalLatitude', 0)),
-                 pred_not(pred_gte('coordinateUncertaintyInMeters', 1000))
-    )
-  } else {
-    occ_download(pred_in('taxonKey', taxonKey), 
-                 pred('country', 'MX'),
-                 pred_notnull('decimalLongitude'),
-                 pred_notnull('decimalLatitude'),
-                 pred_not(pred('decimalLongitude', 0)),
-                 pred_not(pred('decimalLatitude', 0))
-    )
-  }
-
-}
-
-download_and_save <- function(dl_res, raw_fp){
-  
-  # Perform download
-  download_out <- occ_download_get(dl_res[[1]], overwrite=T) 
-  dat <- download_out %>% occ_download_import()
-  datA <- dat %>%
-    filter(!str_detect(issue, 'COUNTRY_COORDINATE_MISMATCH')) 
-  
-  # Save raw
-  datA %>% saveRDS(raw_fp)
-  
-  return(datA)
-}
-
+# ~ Iteratively cue GBIF download and perform ----------------------------------
 # Smaller class
 (key_row12 <- keys_df %>% slice(12))
 res12 <- create_gbif_download(key_row12$key)
@@ -154,7 +100,6 @@ res4 <- create_gbif_download(key_row4$key, FALSE)
 res3 <- create_gbif_download(key_row3$key, FALSE)
 (key_row2 <- keys_df %>% slice(2))
 res2 <- create_gbif_download(key_row2$key, FALSE)
-
 (key_row1<- keys_df %>% slice(1))
 res1 <- create_gbif_download(key_row1$key, FALSE)
 
@@ -172,9 +117,9 @@ if(!file.exists(raw_fp)){
 raw_fp <- str_glue("data/input_data/GBIF/gbif_{key_row11$canonicalName}.rds")
 if(!file.exists(raw_fp)){
   # Wait for download to be ready
-  (dl_meta <- occ_download_meta(res11))
+  (dl_meta <- occ_download_meta(res1))
   if(dl_meta$status == 'SUCCEEDED'){
-    dat <- download_and_save(res11, raw_fp)
+    dat <- download_and_save(res1, raw_fp)
   }
 }
 
@@ -293,8 +238,10 @@ no_nulls %>%
   filter(order == 'Chiroptera') %>% 
   distinct(family)
 
-# Assemble lowest taxonomic ranks that separate out pollinators ----
+# ALTERNATIVE: Assemble lowest taxonomic ranks that separate out pollinators ----
 # bats based on apendice2 ----
+# My concern with this approach is that I might be missing some nectarivorous
+# bats that were overlooked in appendix 2. See below.
 query_name <- 'bat_genera'
 
 # Convert apendice2 table to bat taxon lookup
@@ -335,9 +282,6 @@ bat_genera_dat <- download_and_save(res, raw_fp)
 bat_genera_dat %>% count(species, genus, family)
 bat_genera_dat %>% filter(family == 'Pteropodidae')
 
-# My concern with this approach is that I might be missing some nectarivorous bats that were overlooked in appendix 2.
-
-
 # Nectarivorous bats ----
 # Appears that the tribe and subfamily values aren't maintained for bats. This didn't work.
 query_name <- 'bat_query'
@@ -354,13 +298,13 @@ bat_query <- c('Glossophaginae', 'subfamily',
 bat_query_keys <- bat_query %>% 
   pmap_dfr(~ name_suggest(.x, rank = .y)$data )
 
-# birds based on apendice2 ----
+# Birds based on apendice2 ----
 query_name <- 'birds_genera'
 
 df_filt <- ap2_df %>% filter(family == 'Trochilidae')
 df_filt <- ap2_df %>% filter(class == 'Aves')
 
-# Convert apendice2 table to bat taxon lookup
+# Convert apendice2 table to taxon lookup
 genera <- df_filt %>% 
   distinct(genus) %>% 
   filter(!is.na(genus)) %>% 
@@ -368,16 +312,19 @@ genera <- df_filt %>%
   select(name, rank)
 
 # Check that entries aren't getting left out
+# See all distinct pollinators
 df_filt %>% 
   count(Polinizador, species, genus, family) 
 
+# See those that aren't included in genera for lookup
 df_filt %>% 
-  distinct(Polinizador, species, genus, family)  %>% 
+  count(Polinizador, species, genus, family)  %>% 
   anti_join(genera, by = c(genus = 'name'))
 
+# See those genera without species specified
 df_filt %>% filter(is.na(species))
 
-# Query GBIF 
+# Query GBIF ----
 genera_keys <- genera %>% 
   pmap_dfr(~ name_suggest(.x, rank = .y)$data )
 
@@ -396,10 +343,11 @@ res <- occ_download(pred_in('taxonKey', keys),
 (dl_meta <- occ_download_meta(res))
 raw_fp <- str_glue("data/input_data/GBIF/gbif_{query_name}.rds")
 bird_genera_dat <- download_and_save(res, raw_fp)
+bird_genera_dat <- readRDS(raw_fp)
 
 # Look
 bird_genera_dat %>% count(species, genus, family)
-bird_genera_dat %>% filter(family == 'Pteropodidae')
+bird_genera_dat %>% filter(family == 'Trochilidae')
 
 # Genera from literature
 query <- c(
@@ -466,4 +414,184 @@ genera_keys <- query %>%
 
 # Thrips ----
 
+# Top 10 crops pollinators -----------------------------------------------------
+query_name <- 'top10crops_genera'
 
+# Use for base de datos for WWF
+top10_crop_pols_fp <- 'data/tidy/Quesada/crop_pllntrs_updated_top10.csv'
+top_pols <- read_csv(top10_crop_pols_fp)
+
+# Look at genera listed for each crop
+df_filt <- top10_pols %>% 
+  group_by(Cultivo) %>% 
+  distinct(genus) %>% 
+  ungroup
+df_filt <- top10_pols
+
+# Convert apendice2 table to taxon lookup
+genera <- df_filt %>% 
+  distinct(genus) %>% 
+  filter(!is.na(genus)) %>% 
+  pivot_longer(genus, names_to = 'rank', values_to = 'name') %>% 
+  select(name, rank)
+
+# Check that entries aren't getting left out
+# See all distinct pollinators
+df_filt %>% 
+  count(Polinizador, species, genus, family) 
+
+# See those that aren't included in genera for lookup
+df_filt %>% 
+  count(Cultivo, Polinizador, species, genus, tribe, family, order)  %>% 
+  anti_join(genera, by = c(genus = 'name'))
+
+# See those rows without genus specified
+df_filt %>% filter(is.na(genus))
+
+# See all distinct pollinators
+df_filt %>% 
+  filter(is.na(genus)) %>% 
+  count(Cultivo, Polinizador, species, genus, tribe, family)
+  
+
+# Query GBIF ----
+genera_keys <- genera %>% 
+  pmap_dfr(~ name_suggest(.x, rank = .y)$data )
+
+# Single download (prior method) 
+keys <- genera_keys %>% dplyr::select(key) %>% deframe
+
+# Cue download - only need to run once 
+res <- occ_download(pred_in('taxonKey', keys), 
+                    pred('country', 'MX'),
+                    pred_notnull('decimalLongitude'),
+                    pred_notnull('decimalLatitude'),
+                    pred_not(pred('decimalLongitude', 0)),
+                    pred_not(pred('decimalLatitude', 0)))
+
+# Wait for download to be ready
+(dl_meta <- occ_download_meta(res))
+raw_fp <- str_glue("data/input_data/GBIF/gbif_{query_name}.rds")
+genera_dat <- download_and_save(res, raw_fp)
+genera_dat <- readRDS(raw_fp)
+
+# Look
+genera_dat %>% count(species, genus, family)
+genera_dat %>% filter(family == 'Trochilidae')
+
+
+# select only necessary columns
+vars <- c('gbifID',
+          # taxonomic
+          'species', 'genus', 'family', 'order', 'class',
+          # location
+          'decimalLongitude', 'decimalLatitude', 'coordinateUncertaintyInMeters',
+          'georeferenceRemarks', 'issue',
+          # place
+          'country', 'countryCode', 'stateProvince', 'county',
+          'municipality', 'locality', 'verbatimLocality',
+          # time
+          'eventDate',
+          # collection
+          'basisOfRecord', 'country', 'institutionCode',
+          'institutionID', 'ownerInstitutionCode', 'recordedBy',
+          'datasetName',
+          # elevation
+          'verbatimElevation', 'elevation', 'elevationAccuracy',
+          # misc
+          'occurrenceStatus', 'establishmentMeans'
+)
+genera_dat <- genera_dat %>% dplyr::select(matches(vars))
+
+# Use taxize to get tribe and superfamily ----
+# List unique genuses
+gen_list <- genera_dat %>% 
+  dplyr::select(genus) %>% 
+  distinct %>% 
+  filter(!is.na(genus))
+
+taxon_fp <- str_glue("data/input_data/GBIF/temp_gbif_{query_name}_taxons.rds")
+if(!file.exists(taxon_fp)){
+  # Get tribe and superfamily
+  new_taxons <- gen_list %>% 
+    purrr::map_dfr(taxize::tax_name, get=c('tribe', 'superfamily', 'division'), db='both')
+  new_taxons %>% saveRDS(taxon_fp)
+  
+} else {
+  new_taxons <- readRDS(taxon_fp)
+  
+}
+
+# Tidy results
+new_taxons <- new_taxons %>% 
+  group_by(query) %>% 
+  fill(tribe, superfamily, .direction = 'down') %>% 
+  fill(tribe, superfamily, .direction = 'up') %>% 
+  slice(1) %>% 
+  ungroup %>% 
+  dplyr::select(genus = query, tribe, superfamily)
+
+# Join to df
+genera_dat <- genera_dat %>% 
+  left_join(new_taxons) 
+
+raw_fp <- str_glue("data/input_data/GBIF/gbif_{query_name}_extra_ranks.rds")
+genera_dat %>% saveRDS(raw_fp)
+
+# ~ OLD: Single download ----
+# keys <- keys_df %>% dplyr::select(key) %>% deframe
+# 
+# # Cue download and perform - only need to run once 
+# res <- occ_download(pred_in('taxonKey', keys), 
+#                     pred('country', 'MX'),
+#                     pred_notnull('decimalLongitude'),
+#                     pred_notnull('decimalLatitude'),
+#                     pred_not(pred('decimalLongitude', 0)),
+#                     pred_not(pred('decimalLatitude', 0)))
+# 
+# # Wait for download to be ready
+# occ_download_meta(res)
+# 
+# # Perform download
+# download_out <- occ_download_get(res[[1]], overwrite=T) 
+# dat <- download_out %>% occ_download_import()
+# datA <- dat %>%
+#   filter(!str_detect(issue, 'COUNTRY_COORDINATE_MISMATCH')) 
+# 
+# # Save raw
+# dat %>% saveRDS(raw_fp)
+# 
+# # Load raw ----
+# dat <- readRDS(raw_fp)
+# 
+# # select only necessary columns
+# vars <- c('gbifID',
+#           # taxonomic
+#           'species', 'genus', 'family', 'order', 'class',
+#           # location
+#           'decimalLongitude', 'decimalLatitude', 'coordinateUncertaintyInMeters', 
+#           'georeferenceRemarks', 'issue',
+#           # place
+#           'country', 'countryCode', 'stateProvince', 'county', 
+#           'municipality', 'locality', 'verbatimLocality',
+#           # time
+#           'eventDate',
+#           # collection
+#           'basisOfRecord', 'country', 'institutionCode',
+#           'institutionID', 'ownerInstitutionCode', 'recordedBy',
+#           'datasetName',
+#           # elevation
+#           'verbatimElevation', 'elevation', 'elevationAccuracy',
+#           # misc
+#           'occurrenceStatus', 'establishmentMeans'
+# )
+# dat1 <- dat %>% dplyr::select(matches(vars))
+# 
+# # Save
+# dat1 %>% saveRDS(gbif_slim_fp)
+# 
+# dat1 <- readRDS(gbif_slim_fp)
+# 
+# 
+# t1 <- dat1 %>% count(datasetName)
+# t1 <- dat1 %>% count(establishmentMeans)

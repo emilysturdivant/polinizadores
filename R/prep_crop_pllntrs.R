@@ -101,25 +101,27 @@ ap1_df <- plyr::join_all(ap1_sheets, by = 'Especie', type = 'full')
 ap1_df <- ap1_df %>% mutate(Cultivo = standardize_crop_species(Especie))
 
 # Get crops with highest pollinator value (Valor del polinizador) 
-top10_ap1 <- ap1_df %>% 
+top_n <- 10
+top_ap1 <- ap1_df %>% 
   filter(str_detect(Importancia.de.la.polinización, 'DD|D\\?')) %>%
   arrange(desc(Valor.del.polinizador.en.2010..MEX..)) %>% 
-  head(10) 
+  head(top_n) 
 
-top10_ap1 %>% distinct(Cultivo)
+top_ap1 %>% distinct(Cultivo)
 
 # Get pollinator species for top crops ----
-
 # Apendice2, crop to pollinator table
 ap2_df <- tidy_croppllntrs_tbl(crp_pllntrs_fp) %>% 
   mutate(Cultivo = standardize_crop_species(Cultivo))
 
 # Extract species of top crops from ap2
-top10_pols <- semi_join(ap2_df, top10_ap1, by = "Cultivo")
+top_pols <- semi_join(ap2_df, top_ap1, by = "Cultivo")
+
+# Save
+top_crop_pols_fp <- str_glue('data/tidy/Quesada/crop_pllntrs_updated_top{top_n}.csv')
+top_pols %>% write_csv(top_crop_pols_fp)
 
 # Look at genera listed for each crop
-crop_list <- top10_pols %>% 
+crop_list <- top_pols %>% 
   group_by(Cultivo) %>% 
   distinct(genus)
-
-# ~ GBIF download ----

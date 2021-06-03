@@ -1,10 +1,12 @@
 ---
 title: "Richness by combined zones"
+abstract: |
+  This is the abstract.
 output: 
   html_document:
     code_folding: hide
     toc: true
-date: 2021-03-23
+date: "`r format(Sys.time(), '%d %B %Y')`"
 editor_options: 
   chunk_output_type: console
 ---
@@ -20,9 +22,16 @@ knitr::opts_chunk$set(echo = TRUE,
 
 ```
 
-### Load libraries and initialize variables
+This notebook uses species richness layers created by SDM and polygons for three landscape variables to compare species richness distributions within the zones created by the three variables.  
+
+The landscape variables/polygons are natural protected areas (ANPs), the 7 ecoregiones (aka. biomes) of Mexico, and landcover classified into vegetation, agriculture, and other. The ANP variable considers inside protected areas, within 10 km of the areas, and greater than 10 km from a protected area. These zone polygons were previously created (prep_create_zone_polygons.R).
+
+The richness layers were created by stacking species distribution models (SDMs) that were produced for every species considered (process_SDM_v2.R). 
+
+The result of the notebook is a collection of graphics displaying richness for each zone and indicating whether the differences in richness are statistically significant.
 
 ```{r initialize, message=FALSE}
+# Load libraries and initialize variables
 library(tidyverse)
 library(patchwork)
 library(rcompanion)
@@ -38,7 +47,8 @@ if(!exists('params')){
     nspecies = 15,
     buffer_distance = 10,
     rich_code = 'Likhd',
-    samp_n = 350)
+    samp_n = 350, 
+    rf_code = 'rf1')
 }
 
 # Filepath codes based on parameters
@@ -49,7 +59,7 @@ dfilt_code <- ifelse(params$filt_dates, '2000to2020', 'alldates')
 dat_dir <- here::here('data', 'data_out')
 
 # Directory of richness tifs (predicted)
-pred_dir <- file.path(dat_dir, 'sdm', str_c(unq_code, '_', dfilt_code), 'rf1')
+pred_dir <- file.path(dat_dir, 'sdm', str_c(unq_code, '_', dfilt_code), params$rf_code)
 
 # Zones raster and lookup table
 zones_fn <- 'stack_anps3_biomes7_usv3'
@@ -85,7 +95,7 @@ if(!file.exists(zones_ras_fp)){
 
   # Input pollinator richness 
   pol_group <- 'Abejas'
-  fp_tail <- file.path('sdm', str_c(unq_code, '_', dfilt_code), 'rf1', pol_group)
+  fp_tail <- file.path('sdm', str_c(unq_code, '_', dfilt_code), rf_code, pol_group)
   pred_dir <- here::here('data', 'data_out', fp_tail)
   rich_fn <- str_glue('{params$rich_code}_rich_{pol_group}_{dfilt_code}_{params$nspecies}species')
   rich_tif_fp <- here::here(pred_dir, str_glue('{rich_fn}.tif'))
