@@ -25,8 +25,9 @@ filt_dates = FALSE
 # pol_group <- 'Abejas'
 nspecies <- 15
 rf_vers <- 2
-name <- order <- 'Hymenoptera'
+name <- order <- 'Diptera'
 contin_vars_only <- TRUE
+# contin_vars_only <- FALSE
 
 # Date range
 date_range <- c(2000, 2020)
@@ -260,7 +261,6 @@ mex <- raster::getData('GADM', country='MEX', level=1,
 # Load environment variables ----
 crop_dir <- file.path('data', 'input_data', 'environment_variables', 'cropped')
 predictors <- raster::stack(list.files(crop_dir, 'tif$', full.names=T))
-# predictors <- terra::rast(list.files(crop_dir, 'tif$', full.names=T))
 
 # Remove layers from predictors
 drop_lst <- c('biomes_CVEECON2', 'biomes_CVEECON1', 'biomes_CVEECON4',
@@ -285,68 +285,66 @@ unq_code <- ifelse(mutually_exclusive_pa, 'exclusive', unq_code)
 dfilt_code <- ifelse(filt_dates, '2000to2020', 'alldates')
 cont_var_code <- ifelse(contin_vars_only, '_continuouspredictors', '')
 
-fp_tail <- file.path('sdm', 
-                     str_c('rf', 
-                           str_c(rf_vers, unq_code, dfilt_code, sep='_'), cont_var_code), 
-                     name)
+rf_name <- str_c('rf', str_c(rf_vers, unq_code, dfilt_code, sep='_'), cont_var_code)
+fp_tail <- file.path('sdm', rf_name, name)
 pred_dir <- file.path('data', 'data_out', fp_tail)
 rf_fig_dir <- file.path('figures', fp_tail)
 rf_fig_dir <- pred_dir
 dir.create(pred_dir, recursive=T, showWarnings = F)
 dir.create(rf_fig_dir, recursive=T, showWarnings = F)
 
+# Input GBIF points
 pts_fp <- str_glue("data/input_data/GBIF/family_order_query/gbif_{order}.rds")
 
-pol_dir <- 'data/tidy/gbif/no_duplicates'
-pol_fp_out <- file.path(pol_dir, str_c(dfilt_code, '_gt24perSpecies'),
-                        str_c(name, '.gpkg'))
-pol_fp_out <- file.path(pred_dir, str_c('filtered_pts_', name, '.gpkg'))
-
+# Output filtered points
 filt_pts_rds <- file.path(pred_dir, str_c('filtered_pts_', name, '.rds'))
 
-# Load and tidy GBIF points ----
-dat <- readRDS(pts_fp)
-
-# Data tidying steps: drop imprecise coordinates, drop duplicates
-vars <- c('species', 'genus', 'tribe', 'family', 'superfamily', 'order', 'class', 'nocturna', 
-          'decimalLongitude', 'decimalLatitude', 
-          'eventDate', 'coordinateUncertaintyInMeters', 'habitat', 
-          'basisOfRecord', 'country', 'stateProvince', 'institutionCode')
-
-df <- dat %>% 
-  filter(coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters)) %>% 
-  filter(genus != "") %>% 
-  dplyr::select(matches(vars))
-
-# drop duplicates
-pol_df1 <- df %>% 
-  distinct %>% 
-  st_as_sf(x = .,                         
-           coords = c("decimalLongitude", "decimalLatitude"),
-           crs = 4326)
-
-# Optionally filter to date range
-if(filt_dates) {
-  # Dates
-  date_min <- as.POSIXct(str_c(date_range[[1]], "-01-01"))
-  date_max <- as.POSIXct(str_c(date_range[[2]], "-12-31"))
+# Load and filter GBIF points for given name ----
+if( !file.exists(filt_pts_rds) ) {
   
-  pol_df1 <- pol_df1 %>% 
-    filter(eventDate >= date_min & eventDate <= date_max)
+  # Load raw GBIF points
+  dat <- readRDS(pts_fp)
+  
+  # Data tidying steps: drop imprecise coordinates, drop duplicates
+  vars <- c('species', 'genus', 'tribe', 'family', 'superfamily', 'order', 'class', 'nocturna', 
+            'decimalLongitude', 'decimalLatitude', 
+            'eventDate', 'coordinateUncertaintyInMeters', 'habitat', 
+            'basisOfRecord', 'country', 'stateProvince', 'institutionCode')
+  
+  df <- dat %>% 
+    filter(coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters)) %>% 
+    filter(genus != "") %>% 
+    dplyr::select(matches(vars))
+  
+  # drop duplicates
+  pol_df1 <- df %>% 
+    distinct %>% 
+    st_as_sf(x = .,                         
+             coords = c("decimalLongitude", "decimalLatitude"),
+             crs = 4326)
+  
+  # Optionally filter to date range
+  if(filt_dates) {
+    # Dates
+    date_min <- as.POSIXct(str_c(date_range[[1]], "-01-01"))
+    date_max <- as.POSIXct(str_c(date_range[[2]], "-12-31"))
+    
+    pol_df1 <- pol_df1 %>% 
+      filter(eventDate >= date_min & eventDate <= date_max)
+  }
+  
+  # Remove species with less than 25 distinct observations (based on Koch et al. 2017)
+  pol_df2 <- pol_df1 %>% 
+    st_transform(st_crs(predictors)) %>% 
+    mutate(species = ifelse(species == "", genus, species)) %>% 
+    group_by(species, genus) %>% 
+    filter(n() > 24) %>% 
+    ungroup()
+  
+  # Save
+  pol_df2 %>% saveRDS(filt_pts_rds)
+  
 }
-
-# Remove species with less than 25 distinct observations (based on Koch et al. 2017)
-pol_df2 <- pol_df1 %>% 
-  st_transform(st_crs(predictors)) %>% 
-  mutate(species = ifelse(species == "", genus, species)) %>% 
-  group_by(species, genus) %>% 
-  filter(n() > 24) %>% 
-  ungroup()
-
-# Save
-# dir.create(dirname(pol_fp_out), recursive=TRUE, showWarnings =FALSE)
-# pol_df2 %>% st_write(pol_fp_out)
-pol_df2 %>% saveRDS(filt_pts_rds)
 
 # # Merge filtered points into one file
 # pol_dir_out <- file.path(pol_dir, str_c(dfilt_code, '_gt24perSpecies'))
@@ -354,16 +352,14 @@ pol_df2 %>% saveRDS(filt_pts_rds)
 # combo <- fps %>% map_dfr(st_read)
 # combo %>% st_write(file.path(pol_dir, 'combined', str_c(dfilt_code, '_gt24perSpecies.gpkg')))
 
-# Load pollinator points ----
-# pol_df2 <- st_read(pol_fp_out)
+# Load filtered points ----
 pol_df2 <- readRDS(filt_pts_rds)
 
-# LOOP through species ----
+# Get species list 
 sp_counts <- pol_df2 %>% 
   st_drop_geometry %>% 
   count(species, genus) %>% 
   arrange(desc(n))
-
 sp_list <- sp_counts %>% slice(1:nspecies) %>% dplyr::select(species) %>% deframe
 sp_nospc_list <- str_replace(sp_list, ' ', '_')
 
@@ -417,7 +413,7 @@ fps <- list.files(file.path(pred_dir, 'models'), '*.rds', full.names = T)
 
 # filter filepaths to species list
 sp_fps <- sp_nospc_list %>% 
-  map(~str_subset(.y, .x), fps) %>% 
+  map(~str_subset(.y, str_glue("{.x}.tif")), fps) %>% 
   flatten_chr()
 
 for(rf_fp in sp_fps){
@@ -442,6 +438,11 @@ for(rf_fp in sp_fps){
 
 # Create PNGs of likelihood maps ----
 fps <- list.files(file.path(pred_dir, 'likelihood'), '*.tif', full.names=T)
+
+# filter filepaths to species list
+sp_fps <- sp_nospc_list %>% 
+  map(~str_subset(.y, str_glue("{.x}.tif")), fps) %>% 
+  flatten_chr()
 
 for (fp in fps) {
   
@@ -514,12 +515,12 @@ if(pol_group == 'Mariposas'){
 # List TIFs and filter to species list
 fps <- list.files(file.path(pred_dir, 'likelihood'), 'tif$', full.name=T)
 sp_fps <- sp_nospc_list %>% 
-  map(~str_subset(.y, .x), fps) %>% 
+  map(~str_subset(.y, str_glue("{.x}.tif")), fps) %>% 
   flatten_chr()
 
 if(length(sp_fps) > 0) {
   
-  rich_fn <- str_glue('Likhd_rich_{name}_{dfilt_code}_{length(sp_fps)}species')
+  rich_fn <- str_glue('richness_{name}_{rf_name}_{length(sp_fps)}species_lkhd')
   rich_plot_fp <- file.path(rf_fig_dir, str_glue('{rich_fn}.png'))
   rich_tif_fp <- file.path(pred_dir, str_glue('{rich_fn}.tif'))
   
@@ -531,12 +532,12 @@ if(length(sp_fps) > 0) {
 # Use raster package
 fps <- list.files(file.path(pred_dir, 'binned_spec_sens'), 'tif$', full.name=T)
 sp_fps <- sp_nospc_list %>% 
-  map(~str_subset(.y, .x), fps) %>% 
+  map(~str_subset(.y, str_glue("{.x}.tif")), fps) %>% 
   flatten_chr()
 
 if(length(fps) > 0) {
   
-  fn <- str_glue('PA_rich_{pol_group}_{dfilt_code}_{nlayers(pol_stack)}species')
+  fn <- str_glue('richness_{name}_{rf_name}_{length(sp_fps)}species_binned')
   binned_rich_plot_fp <- file.path(rf_fig_dir, str_glue('{fn}.png'))
   binned_rich_tif_fp <- file.path(pred_dir, str_glue('{fn}.tif'))
 
@@ -554,7 +555,7 @@ fps <- list.files(file.path(pred_dir, 'likelihood'), 'tif$', full.name=T)
 
 # Filter TIFs to species list
 sp_fps <- sp_nospc_list %>% 
-  map(~str_subset(.y, .x), fps) %>% 
+  map(~str_subset(.y, str_glue("{.x}.tif")), fps) %>% 
   flatten_chr()
 
 cult_dir <- 'data/data_out/pollinator_points/sdms_by_crop/Cucurbita_argyrosperma'
@@ -575,7 +576,7 @@ if(length(sp_fps) > 0) {
 # List TIFs and filter to species list
 fps <- list.files(file.path(pred_dir, 'binned_spec_sens'), 'tif$', full.name=T)
 sp_fps <- sp_nospc_list %>% 
-  map(~str_subset(.y, .x), fps) %>% 
+  map(~str_subset(.y, str_glue("{.x}.tif")), fps) %>% 
   flatten_chr()
 
 # Run for crop
@@ -590,3 +591,31 @@ if(length(fps) > 0) {
   
 }
 
+
+
+# COMPARE model versions ----
+taxa <- 'Apis_mellifera'
+fps <- list.files('data/data_out/sdm', str_glue('{taxa}\\.csv'),
+           full.names = TRUE, recursive = TRUE) %>% 
+  str_subset('model_evals')
+fps
+
+evals <- fps %>% map_dfr(read_csv)
+# evals$fp <- fps %>% str_extract("(?<=\\/)rf[^\\/]*")
+evals$fp <- fps %>% str_extract("(?<=\\/)rf.*(?=\\/)")
+
+taxa <- 'Bombus_ephippiatus'
+fps <- list.files('data/data_out/sdm', str_glue('{taxa}\\.csv'),
+                  full.names = TRUE, recursive = TRUE) %>% 
+  str_subset('model_evals')
+evals <- fps %>% map_dfr(read_csv)
+# evals$fp <- fps %>% str_extract("(?<=\\/)rf[^\\/]*")
+evals$fp <- fps %>% str_extract("(?<=\\/)rf.*(?=\\/)")
+
+taxa <- 'Partamona_bilineata'
+fps <- list.files('data/data_out/sdm', str_glue('{taxa}\\.csv'),
+                  full.names = TRUE, recursive = TRUE) %>% 
+  str_subset('model_evals')
+evals <- fps %>% map_dfr(read_csv)
+# evals$fp <- fps %>% str_extract("(?<=\\/)rf[^\\/]*")
+evals$fp <- fps %>% str_extract("(?<=\\/)rf.*(?=\\/)")
