@@ -25,9 +25,10 @@ filt_dates = FALSE
 # pol_group <- 'Abejas'
 nspecies <- 15
 rf_vers <- 2
-name <- order <- 'Diptera'
+name <- order <- 'Hymenoptera'
 contin_vars_only <- TRUE
 # contin_vars_only <- FALSE
+noApis = TRUE
 
 # Date range
 date_range <- c(2000, 2020)
@@ -277,13 +278,12 @@ pred <- predictors[[- which(names(predictors) %in% drop_lst) ]]
 # Set extent for testing
 ext <- raster::extent(mex)
 
-# ~ Standard random forest (from R-Spatial https://rspatial.org/raster/sdm) ----
-
-# directory paths
+# directory paths ----
 unq_code <- ifelse(unq_cells, 'unq_cells', 'unq_pts')
 unq_code <- ifelse(mutually_exclusive_pa, 'exclusive', unq_code)
 dfilt_code <- ifelse(filt_dates, '2000to2020', 'alldates')
 cont_var_code <- ifelse(contin_vars_only, '_continuouspredictors', '')
+apis_code <- ifelse(order == 'Hymenoptera', ifelse(noApis, '_noApis', ''), '')
 
 rf_name <- str_c('rf', str_c(rf_vers, unq_code, dfilt_code, sep='_'), cont_var_code)
 fp_tail <- file.path('sdm', rf_name, name)
@@ -360,10 +360,19 @@ sp_counts <- pol_df2 %>%
   st_drop_geometry %>% 
   count(species, genus) %>% 
   arrange(desc(n))
-sp_list <- sp_counts %>% slice(1:nspecies) %>% dplyr::select(species) %>% deframe
+
+if(noApis) {
+  sp_counts <- sp_counts %>% 
+    filter(!str_detect(species, 'Apis mellifera'))
+}
+
+sp_list <- sp_counts %>% 
+  slice(1:nspecies) %>% 
+  dplyr::select(species) %>% 
+  deframe
 sp_nospc_list <- str_replace(sp_list, ' ', '_')
 
-# Make RF model for each species ----
+# ~ Make RF model for each species ----
 # sp_name <- sp_list[[2]]
 for(sp_name in sp_list) {
   
@@ -413,7 +422,7 @@ fps <- list.files(file.path(pred_dir, 'models'), '*.rds', full.names = T)
 
 # filter filepaths to species list
 sp_fps <- sp_nospc_list %>% 
-  map(~str_subset(.y, str_glue("{.x}.tif")), fps) %>% 
+  map(~str_subset(.y, str_glue("{.x}.rds")), fps) %>% 
   flatten_chr()
 
 for(rf_fp in sp_fps){
@@ -497,7 +506,7 @@ for (fp in fps) {
   
 }
 
-# COMBINE Sum likelihood maps ----
+# ~ COMBINE Sum likelihood maps ----
 # list species (such as nocturnal butterflies)
 if(pol_group == 'Mariposas'){
   sp_groups <- pol_df1 %>% st_drop_geometry %>% distinct(species, nocturna)
@@ -520,7 +529,7 @@ sp_fps <- sp_nospc_list %>%
 
 if(length(sp_fps) > 0) {
   
-  rich_fn <- str_glue('richness_{name}_{rf_name}_{length(sp_fps)}species_lkhd')
+  rich_fn <- str_glue('richness_{name}_{rf_name}_{length(sp_fps)}species{apis_code}_lkhd')
   rich_plot_fp <- file.path(rf_fig_dir, str_glue('{rich_fn}.png'))
   rich_tif_fp <- file.path(pred_dir, str_glue('{rich_fn}.tif'))
   

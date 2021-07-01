@@ -13,14 +13,14 @@ library(tidyverse)
 
 # Initialize -------------------------------------------------------------------
 fig_dir <- 'figures/pol_exploration_no_iNaturalist/date_gt2009'
-name <- 'Abejas'
+name <- 'Colibries'
 # fp_out <- file.path('data/data_out/pollinator_points/no_duplicates', str_c(name, '.gpkg'))
 # df <- st_read(fp_out)
 
 # Pollinator database ----
 data_dir <- 'data/input_data/Quesada_bioclim_pol_y_cultivos/Completos'
 fps <- list.files(data_dir, full.names = T)
-fp <- fps[[4]]
+fp <- fps[[3]]
 
 (name <- fp %>% 
     basename %>% file_path_sans_ext %>% 
@@ -84,13 +84,14 @@ df <- dat %>%
   filter(decimalLongitude != 0 & decimalLatitude != 0) %>% 
   filter(!str_detect(issues, 'COUNTRY_COORDINATE_MISMATCH')) %>% 
   filter(coordinateUncertaintyInMeters < 1000 | is.na(coordinateUncertaintyInMeters)) %>% 
-  filter(institutionCode != 'iNaturalist') %>% 
+  # filter(institutionCode != 'iNaturalist') %>% 
   dplyr::select(matches(vars))
 
 sf_df <- df %>% 
   st_as_sf(x = .,                         
            coords = c("decimalLongitude", "decimalLatitude"),
            crs = 4326)
+
 
 # Save
 fp_out <- file.path('data/data_out/pollinator_points/with_duplicates', 
@@ -104,13 +105,18 @@ sf_df2 <- df %>%
            coords = c("decimalLongitude", "decimalLatitude"),
            crs = 4326)
 
+spX <- sf_df2 %>% filter(str_detect(species, 'Lophornis brachylophus'))
+fp_out <- file.path('data/data_out/pollinator_points/no_duplicates',
+                    str_c(name, '_Lophornis_brachylophus.gpkg'))
+spX %>% st_write(fp_out, append = FALSE)
+
 # Save
 fp_out <- file.path('data/data_out/pollinator_points/no_duplicates',
                     str_c(name, '.gpkg'))
 sf_df2 %>% st_write(fp_out, append = FALSE)
 
 # Get list of unique species and join to species in Informacion_general ----
-pol_group <- 'Abejas'
+pol_group <- 'Colibries'
 
 # Load pollinator file
 pol_dir <- 'data/data_out/pollinator_points/with_duplicates'

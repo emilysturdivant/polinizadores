@@ -3,6 +3,8 @@
 
 # Load libraries ----
 library('tidyverse')
+library('patchwork')
+library('rcompanion')
 
 # Initialize -----
 unq_cells = TRUE
@@ -14,6 +16,7 @@ rf_vers <- 2
 name <- order <- 'Hymenoptera'
 contin_vars_only <- TRUE
 # contin_vars_only <- FALSE
+noApis = TRUE
 
 buffer_distance = 10
 rich_code = 'Likhd'
@@ -53,7 +56,10 @@ lu <- readRDS(zones_lu_fp)
 # Sum likelihood maps ----
 # Get pollinators dataframe - Quesada updated, top 10 crops
 lu_df <- 'data/tidy/Quesada/crop_pllntrs_updated_top10.csv'
+lu_df <- 'data/tidy/Quesada/crop_pllntrs_from_ap2_updated_tidied.csv'
 pol_df <- read_csv(lu_df)
+
+# See values in subgroup_a (equivalent to sociabilidad for Hymenoptera)
 pol_df %>% filter(order == order) %>% distinct(subgroup_a)
 
 # Get Millard pollinators list -----
@@ -72,9 +78,32 @@ pllntrs_millard <- pllntrs_millard %>%
   filter(str_detect(status, regex('KEPT', ignore_case = TRUE)))
 
 # subset of pollinating species in the PREDICTS database
-pllntrs_millard_rds <- 'data/input_data/Millard/PREDICTS_pollinators_8_exp.rds'
-pllntrs_millard <- readRDS(pllntrs_millard_rds)
+# pllntrs_millard_rds <- 'data/input_data/Millard/PREDICTS_pollinators_8_exp.rds'
+# pllntrs_predicts <- readRDS(pllntrs_millard_rds)
 
+# Compare Millard pollinators to our list
+anti_join(pllntrs_millard, pol_df, by = c(Genus = 'genus'))
+semi_join(pllntrs_millard, pol_df, by = c(Genus = 'genus'))
+
+genus_list_q <- pol_df %>% distinct(genus)
+genus_list_m <- pllntrs_millard %>% distinct(Genus)
+
+# Genera in our list that aren't found in Millard's - 122
+anti_join(genus_list_q, genus_list_m, by = c(genus = 'Genus'))
+# Genera common to both our list and Millard's - 71
+semi_join(genus_list_q, genus_list_m, by = c(genus = 'Genus'))
+
+pols_distinct <- pol_df %>% select(species:subgenus) %>% distinct
+genus_list_m <- pllntrs_millard %>% distinct(Genus)
+
+# Genera common to both our list and Millard's - 71
+pols_filt <- semi_join(pols_distinct, genus_list_m, by = c(genus = 'Genus'))
+pols_filtx <- anti_join(pols_distinct, genus_list_m, by = c(genus = 'Genus'))
+t1 <- pols_distinct %>% count(order) %>% rename(total = 'n')
+t2 <- pols_filt %>% count(order) %>% rename(in_Millard = 'n')
+t3 <- pols_filtx %>% count(order) %>% rename(not_Millard = 'n')
+
+sum_tbl <- plyr::join_all(list(t1, t2, t3))
 
 
 # list species (such as nocturnal butterflies)
@@ -110,7 +139,11 @@ if(length(sp_fps) > 0) {
 # ALT: List richness tifs ----
 tif_query <- str_glue(
   '{rich_code}_rich_.*_{dfilt_code}_{nspecies}species.tif')
-fps <- list.files(pred_dir, pattern=tif_query, recursive=T, full.names=T)
+
+apis_code <- ifelse(order == 'Hymenoptera', ifelse(noApis, '_noApis', ''), '')
+tif_query <- str_glue(
+  'richness_.*_{dfilt_code}_.*_{nspecies}species{apis_code}_lkhd.tif')
+(fps <- list.files(pred_dir, pattern=tif_query, recursive=T, full.names=T))
 
 for(rich_tif_fp in fps){
   
@@ -138,7 +171,7 @@ for(rich_tif_fp in fps){
 # Combine all richness DFs into one ----
 # Load DFs and row bind
 fps <- list.files(div_dir, pattern='csv$', full.name=T) %>% 
-  str_subset(str_glue('/{rich_code}.*{dfilt_code}'))
+  str_subset(str_glue('/richness_.*{dfilt_code}'))
 div_df1 <- fps %>% purrr::map_dfr(read_csv, col_types='ifffdf')
 
 # Recode biome names
@@ -291,7 +324,7 @@ plot_pollin_facet <- function(df, pol_grp, var2='usv', grp_var='anp_zone',
 # Stratified random sample
 fn <- str_c('samp', samp_n, '_', rich_code, '_', 
             dfilt_code, '_', nspecies, 'species_',
-            length(levels(div_df$pol_group)), 'pols.rds')
+            length(levels(div_df$pol_group)), 'pols', apis_code, '.rds')
 samp_fp <- file.path(div_dir, fn)
 
 if(!file.exists(samp_fp)){
@@ -322,17 +355,17 @@ if(!file.exists(samp_fp)){
 }
 
 # Compare groups ----
-# Compare by ANP zone without land cover ----
-
+# no USV - by ANP zone w/o land cover ----
 grp_var <- 'anp_zone'
 var2 <- NA
 
 # File name
-fn <- str_c('grpdiffs_samp', params$samp_n, '_', 
+fn <- str_c('grpdiffs_samp', samp_n, '_', 
             grp_var, '_', 'noUSV_',
-            params$rich_code, '_', 
-            dfilt_code, '_', params$nspecies, 'species_',
-            length(levels(div_df$pol_group)), 'pols.rds')
+            rich_code, '_', 
+            dfilt_code, '_', nspecies, 'species_',
+            length(levels(div_df$pol_group)), 'pols',
+            apis_code, '.rds')
 grp_diffs_fp <- file.path(div_dir, fn)
 
 if(!file.exists(grp_diffs_fp)){
@@ -367,7 +400,7 @@ medians_anp %>%
   scale_x_continuous(n.breaks= 4) +
   theme(axis.title.y = element_blank(),
         axis.title.x = element_text(margin= margin(t=6, unit='pt')),
-        axis.text.x = element_text(hjust=c(0, 0.5, 1)), 
+        # axis.text.x = element_text(hjust=c(0, 0.5, 1)), 
         plot.title = element_blank(), 
         legend.position = 'bottom', 
         legend.box.spacing = unit(1, 'pt'),
@@ -380,12 +413,22 @@ medians_anp %>%
   labs(caption = "Different colors within one facet indicate statistically significant (p < 0.05) difference between groups.")
 
 # Save figure
-fig_dir <- here::here('figures', 'diversity_by_zones')
-fig_fp <- file.path(fig_dir, dfilt_code,
-                    str_c('grpdiffs_samp', params$samp_n, '_', 
+# fig_dir <- here::here('figures', 'diversity_by_zones')
+# fig_fp <- file.path(fig_dir, dfilt_code,
+#                     str_c('grpdiffs_samp', samp_n, '_', 
+#                           grp_var, '_', 'noUSV_',
+#                           rich_code, '_', 
+#                           dfilt_code, '_', 
+#                           nspecies, 'species_',
+#                           length(levels(div_df$pol_group)), 'pols', 
+#                           apis_code, '.png'))
+fig_fp <- file.path(div_dir,
+                    str_c('grpdiffs_samp', samp_n, '_', 
                           grp_var, '_', 'noUSV_',
-                          params$rich_code, '_', 
+                          rich_code, '_', 
                           dfilt_code, '_', 
-                          params$nspecies, 'species_',
-                          length(levels(div_df$pol_group)), 'pols.png'))
+                          nspecies, 'species_',
+                          length(levels(div_df$pol_group)), 'pols',
+                          apis_code, '.png'))
 if(!file.exists(fig_fp)) ggsave(fig_fp, width=9, height=4)
+ggsave(fig_fp, width=7, height=3)

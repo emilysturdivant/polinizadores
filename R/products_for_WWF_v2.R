@@ -70,7 +70,8 @@ abeja_subgroups <- abeja_sub1 %>%
 # Join
 df2 <- df1 %>% 
   left_join(abeja_subgroups, by = 'genus')
-  
+
+# QC abejas ----
 # Check for non-matching rows
 abejas <- df1 %>% filter(superfamily == 'Apoidea')
 
